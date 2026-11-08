@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cross-Device Glasses Sizer & Face Shape Analyzer</title>
+  <title>Cross-Device Universal Glasses Size Finder</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
@@ -14,25 +14,33 @@
     
     <!-- Header -->
     <div class="text-center space-y-1">
-      <h1 class="text-2xl font-bold text-white">Eyewear Size & Shape Guide</h1>
-      <p class="text-slate-400 text-sm">Align card with green target box & capture</p>
+      <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
+      <p class="text-slate-400 text-sm">Universal Cross-Device Calibration (#127 & #356)</p>
     </div>
 
-    <!-- Camera Feed & Template Overlay -->
+    <!-- Camera Feed -->
     <div class="relative w-full aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border border-slate-800 flex items-center justify-center">
       <video id="webcam" class="hidden" playsinline></video>
       <canvas id="output_canvas" class="w-full h-full object-cover -scale-x-100"></canvas>
       
-      <!-- Loading Overlay -->
       <div id="loading" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-sky-400 font-medium text-base p-6 text-center">
-        <span>Initializing camera feed...</span>
+        <span>Initializing camera...</span>
       </div>
 
-      <!-- Live Status Pill -->
       <div id="statusPill" class="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2 transition-all duration-300">
-        <span id="statusIcon">💳</span>
-        <span id="statusText">Fit card to green template box</span>
+        <span id="statusIcon">⚠️</span>
+        <span id="statusText">Fit green box to card edges</span>
       </div>
+    </div>
+
+    <!-- Automatic Face-Proportional Box Calibration Slider -->
+    <div class="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+      <div class="flex justify-between text-xs text-slate-300 font-medium">
+        <span>Card Box Alignment:</span>
+        <span id="ratioText" class="text-emerald-400 font-bold">100%</span>
+      </div>
+      <input type="range" id="cardRatioSlider" min="70" max="130" value="100" class="w-full accent-emerald-500 bg-slate-900 h-2 rounded-lg cursor-pointer">
+      <p class="text-[11px] text-slate-400 text-center">Adjust once until the green box edges align with your card.</p>
     </div>
 
     <!-- Capture Action Button -->
@@ -42,24 +50,24 @@
       </button>
     </div>
 
-    <!-- Results Panel (Displays on Capture) -->
+    <!-- Result Card & Recommendations (Reveals on Capture) -->
     <div id="resultsContainer" class="space-y-4 hidden">
       
       <!-- Size & Measurements -->
-      <div class="bg-slate-950 p-5 rounded-2xl border border-slate-800 text-center space-y-1">
-        <span class="text-xs uppercase tracking-widest text-slate-400 font-semibold">Recommended Frame Size</span>
-        <div id="sizeOutput" class="text-3xl font-extrabold text-sky-400">--</div>
-        <p id="mmSubtext" class="text-xs text-slate-400">Measured Head Width: --</p>
+      <div id="resultCard" class="bg-slate-950 p-5 rounded-2xl border border-slate-800 text-center space-y-1">
+        <span class="text-xs uppercase tracking-widest text-slate-400 font-semibold">Your Size Recommendation</span>
+        <div id="sizeOutput" class="text-3xl font-extrabold text-sky-400">Scanning...</div>
+        <p id="mmSubtext" class="text-xs text-slate-400">Align your face to complete measurement</p>
       </div>
 
-      <!-- Face Shape & Proportions -->
+      <!-- Face Shape Classification -->
       <div class="bg-slate-950 p-5 rounded-2xl border border-slate-800 text-center space-y-1">
         <span class="text-xs uppercase tracking-widest text-slate-400 font-semibold">Detected Face Shape</span>
         <div id="shapeOutput" class="text-3xl font-extrabold text-amber-400">--</div>
         <p id="shapeDesc" class="text-xs text-slate-400">--</p>
       </div>
 
-      <!-- Website Style Guide Recommendation -->
+      <!-- Style Recommendation -->
       <div id="recommendationCard" class="bg-slate-950 p-5 rounded-2xl border border-slate-800 space-y-3">
         <div class="flex items-center space-x-2 border-b border-slate-800 pb-2">
           <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
@@ -91,6 +99,9 @@
     const statusIcon = document.getElementById('statusIcon');
     const statusText = document.getElementById('statusText');
     const captureBtn = document.getElementById('captureBtn');
+
+    const cardRatioSlider = document.getElementById('cardRatioSlider');
+    const ratioText = document.getElementById('ratioText');
 
     const resultsContainer = document.getElementById('resultsContainer');
     const sizeOutput = document.getElementById('sizeOutput');
@@ -129,10 +140,17 @@
       }
     };
 
+    cardRatioSlider.addEventListener('input', (e) => {
+      ratioText.innerText = `${e.target.value}%`;
+      if (isCaptured) {
+        analyzeCapturedFace();
+      }
+    });
+
     captureBtn.addEventListener('click', () => {
       if (!isCaptured) {
         if (!currentLandmarks) {
-          alert("No face detected yet! Position your face in camera frame and try again.");
+          alert("No face detected yet! Position your face in camera view and try again.");
           return;
         }
         isCaptured = true;
@@ -145,8 +163,8 @@
         captureBtn.innerHTML = "<span>📸 Capture & Analyze</span>";
         captureBtn.className = "w-full py-3.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2";
         statusPill.className = "absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2";
-        statusIcon.innerText = "💳";
-        statusText.innerText = "Fit card to green template box";
+        statusIcon.innerText = "⚠️";
+        statusText.innerText = "Fit green box to card edges";
       }
     });
 
@@ -168,20 +186,25 @@
       const h = canvasElement.height;
       const landmarks = currentLandmarks;
 
-      // 1. Head Sizing Math based on Fixed Template Box Scale
       const p127 = landmarks[127];
       const p356 = landmarks[356];
       const pt127 = { x: p127.x * w, y: p127.y * h };
       const pt356 = { x: p356.x * w, y: p356.y * h };
+
       const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
 
-      // Fixed template target dimensions (width = 45% of viewport)
-      const targetCardPixelWidth = w * 0.45;
-      const scaleFrontal = targetCardPixelWidth / CARD_WIDTH_MM;
-      
-      const rawMm = facePixelWidth / scaleFrontal;
-      const trueWidthMm = rawMm * 1.10; // Dynamic depth parallax offset
+      // --- Mathematical Corrections ---
+      // 1. Correct base card-to-head ratio anchor from 0.72 -> 0.58
+      const ratioMultiplier = parseFloat(cardRatioSlider.value) / 100;
+      const cardPixelWidth = (facePixelWidth * 0.58) * ratioMultiplier;
 
+      const scaleFrontal = cardPixelWidth / CARD_WIDTH_MM;
+      const rawMm = facePixelWidth / scaleFrontal;
+      
+      // 2. Correct temporal depth extension multiplier (1.125x)
+      const trueWidthMm = rawMm * 1.125;
+
+      // Standard Optical Size Brackets (<133 Small, 133-139.9 Medium, >=140 Large)
       if (trueWidthMm < 133.0) {
         sizeOutput.innerText = "SMALL";
         sizeOutput.className = "text-3xl font-extrabold text-blue-400";
@@ -194,15 +217,15 @@
       }
       mmSubtext.innerText = `Measured Head Width: ${trueWidthMm.toFixed(1)} mm`;
 
-      // 2. Multi-Factor Face Shape Scoring Engine
-      const p10 = landmarks[10];     // Forehead top
-      const p152 = landmarks[152];   // Chin tip
-      const p234 = landmarks[234];   // Left cheek
-      const p454 = landmarks[454];   // Right cheek
-      const p58 = landmarks[58];     // Jaw corner left
-      const p288 = landmarks[288];   // Jaw corner right
-      const p172 = landmarks[172];   // Lower jaw taper left
-      const p397 = landmarks[397];   // Lower jaw taper right
+      // Multi-Factor Face Shape Engine
+      const p10 = landmarks[10];     
+      const p152 = landmarks[152];   
+      const p234 = landmarks[234];   
+      const p454 = landmarks[454];   
+      const p58 = landmarks[58];     
+      const p288 = landmarks[288];   
+      const p172 = landmarks[172];   
+      const p397 = landmarks[397];   
 
       const cheekWidth = Math.hypot((p454.x - p234.x) * w, (p454.y - p234.y) * h);
       const templeWidth = facePixelWidth;
@@ -287,7 +310,6 @@
         loadingDiv.classList.add('hidden');
       }
 
-      // If user captured frame, freeze rendering
       if (isCaptured) return;
 
       canvasElement.width = videoElement.videoWidth || 1280;
@@ -300,55 +322,47 @@
       const w = canvasElement.width;
       const h = canvasElement.height;
 
-      // Draw Fixed Template Target Box for Credit Card Alignment
-      const targetWidth = w * 0.45;
-      const targetHeight = targetWidth / CARD_ASPECT;
-      const targetX = (w - targetWidth) / 2;
-      const targetY = h * 0.18;
-
-      canvasCtx.strokeStyle = '#22c55e';
-      canvasCtx.lineWidth = 4;
-      canvasCtx.setLineDash([10, 6]);
-      canvasCtx.strokeRect(targetX, targetY, targetWidth, targetHeight);
-      canvasCtx.fillStyle = 'rgba(34, 197, 94, 0.10)';
-      canvasCtx.fillRect(targetX, targetY, targetWidth, targetHeight);
-      canvasCtx.setLineDash([]); // Reset dash
-
-      // Template Label Text
-      canvasCtx.fillStyle = '#22c55e';
-      canvasCtx.font = 'bold 16px sans-serif';
-      canvasCtx.textAlign = 'center';
-      canvasCtx.fillText('ALIGN CARD HERE', w / 2, targetY - 12);
-
       if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
         currentLandmarks = results.multiFaceLandmarks[0];
 
-        // Draw facial contour overlay line
-        drawFacialContour(canvasCtx, currentLandmarks, w, h, '#38bdf8');
+        const p127 = currentLandmarks[127];
+        const p356 = currentLandmarks[356];
+        const pForehead = currentLandmarks[10];
+
+        const pt127 = { x: p127.x * w, y: p127.y * h };
+        const pt356 = { x: p356.x * w, y: p356.y * h };
+
+        const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
+
+        // Corrected green box visual scale (0.58)
+        const ratioMultiplier = parseFloat(cardRatioSlider.value) / 100;
+        const cardPixelWidth = (facePixelWidth * 0.58) * ratioMultiplier;
+        const cardPixelHeight = cardPixelWidth / CARD_ASPECT;
+
+        const boxX = (pForehead.x * w) - (cardPixelWidth / 2);
+        const boxY = (pForehead.y * h) - (cardPixelHeight * 0.85);
+
+        canvasCtx.strokeStyle = '#22c55e';
+        canvasCtx.lineWidth = 4;
+        canvasCtx.strokeRect(boxX, boxY, cardPixelWidth, cardPixelHeight);
+        canvasCtx.fillStyle = 'rgba(34, 197, 94, 0.12)';
+        canvasCtx.fillRect(boxX, boxY, cardPixelWidth, cardPixelHeight);
+
+        canvasCtx.strokeStyle = '#eab308';
+        canvasCtx.lineWidth = 3;
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(pt127.x, pt127.y);
+        canvasCtx.lineTo(pt356.x, pt356.y);
+        canvasCtx.stroke();
+
+        statusPill.className = "absolute top-4 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2";
+        statusIcon.innerText = "✅";
+        statusText.innerText = "Ready - Click Capture";
       } else {
         currentLandmarks = null;
       }
 
       canvasCtx.restore();
-    }
-
-    function drawFacialContour(ctx, landmarks, w, h, color) {
-      const contourIndices = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
-
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      
-      contourIndices.forEach((idx, i) => {
-        const pt = landmarks[idx];
-        const x = pt.x * w;
-        const y = pt.y * h;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-
-      ctx.closePath();
-      ctx.stroke();
     }
 
     const faceMesh = new FaceMesh({
