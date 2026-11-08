@@ -10,12 +10,20 @@
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-center items-center p-4 font-sans">
 
-  <div class="max-w-xl w-full bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-800 space-y-5">
+  <div class="max-w-xl w-full bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-800 space-y-4">
     
     <!-- Header -->
     <div class="text-center space-y-1">
       <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
       <p class="text-slate-400 text-sm">Universal Cross-Device Calibration (#127 & #356)</p>
+    </div>
+
+    <!-- Status Badge (Positioned ABOVE Camera Feed to Avoid Overlap) -->
+    <div class="flex justify-center">
+      <div id="statusPill" class="bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2 transition-all duration-300">
+        <span id="statusIcon">⚠️</span>
+        <span id="statusText">Fit green box to card edges</span>
+      </div>
     </div>
 
     <!-- Camera Feed -->
@@ -25,11 +33,6 @@
       
       <div id="loading" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-sky-400 font-medium text-base p-6 text-center">
         <span>Initializing camera...</span>
-      </div>
-
-      <div id="statusPill" class="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2 transition-all duration-300">
-        <span id="statusIcon">⚠️</span>
-        <span id="statusText">Fit green box to card edges</span>
       </div>
     </div>
 
@@ -162,7 +165,7 @@
         resultsContainer.classList.add('hidden');
         captureBtn.innerHTML = "<span>📸 Capture & Analyze</span>";
         captureBtn.className = "w-full py-3.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2";
-        statusPill.className = "absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2";
+        statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2 transition-all duration-300";
         statusIcon.innerText = "⚠️";
         statusText.innerText = "Fit green box to card edges";
       }
@@ -193,18 +196,14 @@
 
       const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
 
-      // --- Mathematical Corrections ---
-      // 1. Correct base card-to-head ratio anchor from 0.72 -> 0.58
       const ratioMultiplier = parseFloat(cardRatioSlider.value) / 100;
       const cardPixelWidth = (facePixelWidth * 0.58) * ratioMultiplier;
 
       const scaleFrontal = cardPixelWidth / CARD_WIDTH_MM;
       const rawMm = facePixelWidth / scaleFrontal;
       
-      // 2. Correct temporal depth extension multiplier (1.125x)
       const trueWidthMm = rawMm * 1.125;
 
-      // Standard Optical Size Brackets (<133 Small, 133-139.9 Medium, >=140 Large)
       if (trueWidthMm < 133.0) {
         sizeOutput.innerText = "SMALL";
         sizeOutput.className = "text-3xl font-extrabold text-blue-400";
@@ -217,7 +216,6 @@
       }
       mmSubtext.innerText = `Measured Head Width: ${trueWidthMm.toFixed(1)} mm`;
 
-      // Multi-Factor Face Shape Engine
       const p10 = landmarks[10];     
       const p152 = landmarks[152];   
       const p234 = landmarks[234];   
@@ -300,7 +298,7 @@
       whyItWorksText.innerText = rec.why;
 
       resultsContainer.classList.remove('hidden');
-      statusPill.className = "absolute top-4 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2";
+      statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2 transition-all duration-300";
       statusIcon.innerText = "✅";
       statusText.innerText = "Analysis Complete";
     }
@@ -334,7 +332,6 @@
 
         const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
 
-        // Corrected green box visual scale (0.58)
         const ratioMultiplier = parseFloat(cardRatioSlider.value) / 100;
         const cardPixelWidth = (facePixelWidth * 0.58) * ratioMultiplier;
         const cardPixelHeight = cardPixelWidth / CARD_ASPECT;
@@ -355,7 +352,7 @@
         canvasCtx.lineTo(pt356.x, pt356.y);
         canvasCtx.stroke();
 
-        statusPill.className = "absolute top-4 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2";
+        statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2 transition-all duration-300";
         statusIcon.innerText = "✅";
         statusText.innerText = "Ready - Click Capture";
       } else {
