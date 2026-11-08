@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cross-Device Universal Glasses Size Finder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-center items-center p-4 font-sans">
+
+  <div class="max-w-xl w-full bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-800 space-y-5">
+    
+    <!-- Header -->
+    <div class="text-center space-y-1">
+      <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
+      <p id="deviceSubtitle" class="text-slate-400 text-sm">Cross-Device Auto-Calibration</p>
+    </div>
+
+    <!-- Camera Feed -->
+    <div class="relative w-full aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border border-slate-800 flex items-center justify-center">
+      <video id="webcam" class="hidden" playsinline></video>
+      <canvas id="output_canvas" class="w-full h-full object-cover -scale-x-100"></canvas>
+      
+      <div id="loading" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-sky-400 font-medium text-base p-6 text-center">
+        <span>Initializing camera...</span>
+      </div>
+
+      <div id="statusPill" class="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2 transition-all duration-300">
+        <span id="statusIcon">⚠️</span>
+        <span id="statusText">Position face in camera</span>
+      </div>
+    </div>
+
+    <!-- Distance-Enforced Card Calibration Slider -->
+    <div id="calibrationContainer" class="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 opacity-50 pointer-events-none transition-all duration-300">
+      <div class="flex justify-between text-xs text-slate-300 font-medium">
+        <span>Card Box Alignment:</span>
+        <span id="ratioText" class="text-emerald-400 font-bold">100%</span>
+      </div>
+      <input type="range" id="cardRatioSlider" min="70" max="130" value="100" class="w-full accent-emerald-500 bg-slate-900 h-2 rounded-lg cursor-pointer">
+      <p id="calibrationHint" class="text-[11px] text-amber-400 text-center font-medium">⚠️ Move to recommended distance to unlock calibration</p>
+    </div>
+
+    <!-- Result Card -->
+    <div id="resultCard" class="bg-slate-950 p-5 rounded-2xl border border-slate-800 text-center space-y-1">
+      <span class="text-xs uppercase tracking-widest text-slate-400 font-semibold">Your Size Recommendation</span>
+      <div id="sizeOutput" class="text-3xl font-extrabold text-sky-400">Scanning...</div>
+      <p id="mmSubtext" class="text-xs text-slate-400">Position yourself at comfortable distance</p>
+    </div>
+
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const loadingDiv = document.getElementById('loading');
+    
+    const statusPill = document.getElementById('statusPill');
+    const statusIcon = document.getElementById('statusIcon');
+    const statusText = document.getElementById('statusText');
+    const sizeOutput = document.getElementById('sizeOutput');
+    const mmSubtext = document.getElementById('mmSubtext');
+    const deviceSubtitle = document.getElementById('deviceSubtitle');
+    
+    const calibrationContainer = document.getElementById('calibrationContainer');
+    const cardRatioSlider = document.getElementById('cardRatioSlider');
+    const ratioText = document.getElementById('ratioText');
+    const calibrationHint = document.getElementById('calibrationHint');
+
+    const CARD_WIDTH_MM = 85.60;
+    const CARD_ASPECT = 85.60 / 53.98;
+    
+    // Auto-detect mobile profile
+    const IS_MOBILE = /mobile|android|iphone|ipad/i.test(navigator.userAgent);
+    
+    // Adjusted distance gates (28–45 cm for mobile, 60–65 cm for desktop)
+    const MIN_DIST_MM = IS_MOBILE ? 280 : 600; 
+    const MAX_DIST_MM = IS_MOBILE ? 450 : 650; 
+
+    deviceSubtitle.innerText = IS_MOBILE 
+      ? "Mobile Profile Active (Arm's length ~28–45 cm)" 
+      : "Desktop Profile Active (Target range 60–65 cm)";
+
+    cardRatioSlider.addEventListener('input', (e) => {
+      ratioText.innerText = `${e.target.value}%`;
+    });
+
+    function getDeviceFocalMultiplier() {
+      // Lowered from 0.52 to 0.42 for ultra-wide mobile front cameras
+      return IS_MOBILE ? 0.42 : 0.92;
+    }
+
+    function onResults(results) {
+      if (loadingDiv && !loadingDiv.classList.contains('hidden')) {
+        loadingDiv.classList.add('hidden');
+      }
+
+      canvasElement.width = videoElement.videoWidth || 1280;
+      canvasElement.height = videoElement.videoHeight || 720;
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      const w = canvasElement.width;
+      const h = canvasElement.height;
+
+      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+        const landmarks = results.multiFaceLandmarks[0];
+
+        const p127 = landmarks[127];
+        const p356 = landmarks[356];
+        const pForehead = landmarks[10];
+        const pNose = landmarks[1];
+        const pLeftEye = landmarks[33];
+        const pRightEye = landmarks[263];
+
+        const pt127 = { x: p127.x * w, y: p127.y * h };
+        const pt356 = { x: p356.x * w, y: p356.y * h };
+
+        const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
+
+        // Normalized Scale Anchor
+        const ratioMultiplier = parseFloat(cardRatioSlider.value) / 100;
+        const baseAnchor = IS_MOBILE ? 0.58 : 0.55;
+        const cardPixelWidth = (facePixelWidth * baseAnchor) * ratioMultiplier;
+        const cardPixelHeight = cardPixelWidth / CARD_ASPECT;
+
+        // Scale & Distance Math
+        const scaleFrontal = cardPixelWidth / CARD_WIDTH_MM;
+        const focalMultiplier = getDeviceFocalMultiplier();
+        const focalPx = w * focalMultiplier;
+        const cameraDistMm = (CARD_WIDTH_MM * focalPx) / cardPixelWidth;
+
+        const currentDistCm = Math.round(cameraDistMm / 10);
+        const minCm = Math.round(MIN_DIST_MM / 10);
+        const maxCm = Math.round(MAX_DIST_MM / 10);
+
+        // Distance Gatekeeper
+        let isValid = true;
+        let promptMessage = "Hold still...";
+
+        if (cameraDistMm < MIN_DIST_MM) {
+          isValid = false; 
+          promptMessage = `Too close (${currentDistCm} cm)! Move back to ${minCm}–${maxCm} cm`;
+          
+          calibrationContainer.classList.add('opacity-50', 'pointer-events-none');
+          calibrationHint.innerText = `⚠️ Currently at ${currentDistCm} cm. Move back to ${minCm}–${maxCm} cm`;
+          calibrationHint.className = "text-[11px] text-amber-400 text-center font-medium";
+        } else if (cameraDistMm > MAX_DIST_MM) {
+          isValid = false; 
+          promptMessage = `Too far (${currentDistCm} cm)! Move closer to ${minCm}–${maxCm} cm`;
+          
+          calibrationContainer.classList.add('opacity-50', 'pointer-events-none');
+          calibrationHint.innerText = `⚠️ Currently at ${currentDistCm} cm. Move closer to ${minCm}–${maxCm} cm`;
+          calibrationHint.className = "text-[11px] text-amber-400 text-center font-medium";
+        } else {
+          calibrationContainer.classList.remove('opacity-50', 'pointer-events-none');
+          calibrationHint.innerText = `✅ Distance OK (${currentDistCm} cm): Align card box edges`;
+          calibrationHint.className = "text-[11px] text-emerald-400 text-center font-medium";
+
+          const yawRatio = Math.abs(pNose.x - p127.x) / (Math.abs(p356.x - pNose.x) || 1);
+          if (yawRatio < 0.72 || yawRatio > 1.38) {
+            isValid = false; 
+            promptMessage = "Look straight at camera";
+          } else if (Math.abs(pRightEye.y - pLeftEye.y) > 0.04) {
+            isValid = false; 
+            promptMessage = "Keep head level";
+          }
+        }
+
+        // Overlay Box Rendering
+        const boxX = (pForehead.x * w) - (cardPixelWidth / 2);
+        const boxY = (pForehead.y * h) - (cardPixelHeight * 0.85);
+
+        canvasCtx.strokeStyle = isValid ? '#22c55e' : '#f59e0b';
+        canvasCtx.lineWidth = 4;
+        canvasCtx.strokeRect(boxX, boxY, cardPixelWidth, cardPixelHeight);
+        canvasCtx.fillStyle = isValid ? 'rgba(34, 197, 94, 0.12)' : 'rgba(245, 158, 11, 0.12)';
+        canvasCtx.fillRect(boxX, boxY, cardPixelWidth, cardPixelHeight);
+
+        // Temporal Line (#127 ↔ #356)
+        canvasCtx.strokeStyle = '#eab308';
+        canvasCtx.lineWidth = 3;
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(pt127.x, pt127.y);
+        canvasCtx.lineTo(pt356.x, pt356.y);
+        canvasCtx.stroke();
+
+        if (isValid) {
+          statusPill.className = "absolute top-4 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2";
+          statusIcon.innerText = "✅";
+          statusText.innerText = `In Zone (${currentDistCm} cm) - Size Locked`;
+
+          const rawMm = facePixelWidth / scaleFrontal;
+          const parallaxFactor = IS_MOBILE ? 1.08 : 1.125;
+          const trueWidthMm = rawMm * parallaxFactor;
+
+          if (trueWidthMm < 133.0) {
+            sizeOutput.innerText = "SMALL";
+            sizeOutput.className = "text-3xl font-extrabold text-blue-400";
+          } else if (trueWidthMm < 140.0) {
+            sizeOutput.innerText = "MEDIUM";
+            sizeOutput.className = "text-3xl font-extrabold text-emerald-400";
+          } else {
+            sizeOutput.innerText = "LARGE";
+            sizeOutput.className = "text-3xl font-extrabold text-purple-400";
+          }
+          mmSubtext.innerText = `Head Width: ${trueWidthMm.toFixed(1)} mm | Dist: ${currentDistCm} cm`;
+        } else {
+          statusPill.className = "absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full text-xs md:text-sm shadow-lg flex items-center space-x-2";
+          statusIcon.innerText = "⚠️";
+          statusText.innerText = promptMessage;
+        }
+      }
+
+      canvasCtx.restore();
+    }
+
+    const faceMesh = new FaceMesh({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: false,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    faceMesh.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+      onFrame: async () => { await faceMesh.send({ image: videoElement }); },
+      width: 1280,
+      height: 720
+    });
+
+    camera.start();
+  </script>
+</body>
+</html>
