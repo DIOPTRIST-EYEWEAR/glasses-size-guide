@@ -14,8 +14,8 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'GROQ_API_KEY is not set in Vercel' });
     }
 
-    const prompt = `Locate the rectangular physical card (credit card, bank card, or ID card) held against the person's forehead. 
-Return ONLY a JSON object using these exact 4 keys with integer values from 0 to 1000:
+    const prompt = `Detect ONLY the rectangular plastic card (credit card, loyalty card, or ID card) held on the person's forehead. Do NOT include the person's fingers, hand, or hair in the box—tightly bound only the four straight edges of the plastic card itself.
+Return ONLY valid JSON with normalized integer coordinates from 0 to 1000:
 {"ymin": 100, "xmin": 200, "ymax": 300, "xmax": 400}`;
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -34,7 +34,7 @@ Return ONLY a JSON object using these exact 4 keys with integer values from 0 to
           ]
         }],
         response_format: { type: 'json_object' },
-        temperature: 0.1
+        temperature: 0.0
       })
     });
 
@@ -49,15 +49,12 @@ Return ONLY a JSON object using these exact 4 keys with integer values from 0 to
     }
 
     const parsed = JSON.parse(textResult);
-
-    // Handle any format Qwen might return (object, nested box, or [ymin, xmin, ymax, xmax] array)
     let ymin, xmin, ymax, xmax;
     const target = parsed.box || parsed.bounding_box || parsed.coordinates || parsed;
 
     if (Array.isArray(target) && target.length >= 4) {
       [ymin, xmin, ymax, xmax] = target.map(Number);
     } else if (Array.isArray(target.bbox_2d) && target.bbox_2d.length >= 4) {
-      // Qwen native 2D box format is [xmin, ymin, xmax, ymax]
       [xmin, ymin, xmax, ymax] = target.bbox_2d.map(Number);
     } else {
       ymin = Number(target.ymin ?? target.y_min ?? target.top);
