@@ -10,6 +10,10 @@ export default async function handler(req, res) {
     }
 
     const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'GROQ_API_KEY is not set in Vercel' });
+    }
+
     const prompt = `Locate the rectangular physical card (credit card, bank card, or ID card) held against the person's forehead. Return ONLY valid JSON with normalized bounding box coordinates from 0 to 1000: {"ymin": number, "xmin": number, "ymax": number, "xmax": number}`;
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -19,7 +23,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        model: 'qwen/qwen3.8-27b',
         messages: [{
           role: 'user',
           content: [
@@ -33,10 +37,13 @@ export default async function handler(req, res) {
     });
 
     const data = await response.json();
-    const textResult = data.choices?.[0]?.message?.content;
+    if (!response.ok) {
+      return res.status(response.status).json({ error: data.error?.message || 'Groq API rejected the request' });
+    }
 
+    const textResult = data.choices?.[0]?.message?.content;
     if (!textResult) {
-      throw new Error('Failed to extract card coordinates.');
+      return res.status(500).json({ error: 'Empty response from Groq' });
     }
 
     const box = JSON.parse(textResult);
@@ -44,6 +51,6 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Card detection error:', error);
-    return res.status(500).json({ error: 'AI card detection failed' });
+    return res.status(500).json({ error: error.message || 'AI card detection failed' });
   }
 }
