@@ -15,14 +15,14 @@
     <!-- Header -->
     <div class="text-center space-y-1">
       <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
-      <p class="text-slate-400 text-sm">Hold any standard card flat against your forehead & capture</p>
+      <p class="text-slate-400 text-sm">Hold any standard card horizontally against your forehead & capture</p>
     </div>
 
     <!-- Status Badge (Above Camera) -->
     <div class="flex justify-center">
       <div id="statusPill" class="bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2 transition-all duration-300">
         <span id="statusIcon">💳</span>
-        <span id="statusText">Hold card flat on forehead</span>
+        <span id="statusText">Hold card horizontally on forehead</span>
       </div>
     </div>
 
@@ -137,7 +137,7 @@
           return;
         }
         isCaptured = true;
-        runPrecisionCardAnalysis();
+        runEdgeCardAnalysis();
         captureBtn.innerHTML = "<span>🔄 Retake Photo</span>";
         captureBtn.className = "w-full py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2 border border-slate-700";
       } else {
@@ -161,8 +161,8 @@
       return deg;
     }
 
-    // Detects the exact bounding box of the card placed on the forehead using color/luminance segmentation
-    function detectCardOnForehead(ctx, w, h, landmarks) {
+    // Color-agnostic Sobel Edge Gradient detector: works on ANY card color, pattern, or two-tone design
+    function detectCardByEdges(ctx, w, h, landmarks) {
       const p127 = landmarks[127];
       const p356 = landmarks[356];
       const pBrowL = landmarks[105];
@@ -175,73 +175,117 @@
       const faceH = Math.hypot((pChin.x - pNose.x) * w, (pChin.y - pNose.y) * h) * 1.55;
       const centerX = ((p127.x + p356.x) / 2) * w;
 
-      // Sample natural skin tone from cheek/nose bridge (landmark 6)
-      const sampleX = Math.max(0, Math.min(w - 1, Math.round(pNose.x * w)));
-      const sampleY = Math.max(0, Math.min(h - 1, Math.round(pNose.y * h)));
-      const skinData = ctx.getImageData(sampleX - 3, sampleY - 3, 7, 7).data;
-      let skinR = 0, skinG = 0, skinB = 0, count = 0;
-      for (let i = 0; i < skinData.length; i += 4) {
-        skinR += skinData[i];
-        skinG += skinData[i + 1];
-        skinB += skinData[i + 2];
-        count++;
-      }
-      skinR /= count; skinG /= count; skinB /= count;
-
-      // Forehead search ROI: strictly between eyebrows and top of forehead (excludes fingers above!)
-      const roiX1 = Math.max(0, Math.round(centerX - faceW * 0.48));
-      const roiX2 = Math.min(w - 1, Math.round(centerX + faceW * 0.48));
-      const roiY2 = Math.max(10, Math.round(browY - faceH * 0.03));
-      const roiY1 = Math.max(0, Math.round(browY - faceH * 0.42));
+      // Forehead search ROI: strictly between eyebrows and top of forehead, bounded inside temples
+      const roiX1 = Math.max(2, Math.round(centerX - faceW * 0.46));
+      const roiX2 = Math.min(w - 3, Math.round(centerX + faceW * 0.46));
+      const roiY2 = Math.max(12, Math.round(browY - faceH * 0.04));
+      const roiY1 = Math.max(2, Math.round(browY - faceH * 0.42));
 
       const roiW = roiX2 - roiX1;
       const roiH = roiY2 - roiY1;
-      if (roiW <= 20 || roiH <= 20) return null;
+      if (roiW <= 30 || roiH <= 20) return null;
 
       const imgData = ctx.getImageData(roiX1, roiY1, roiW, roiH).data;
 
-      // Score each pixel by how distinctly it differs from cheek skin tone (catches orange, white, blue, black, or metallic cards)
-      const colScores = new Float32Array(roiW);
-      const rowScores = new Float32Array(roiH);
+      // Convert ROI to grayscale luminance array
+      const gray = new Float32Array(roiW * roiH);
+      for (let i = 0; i < roiW * roiH; i++) {
+        const idx = i * 4;
+        gray[i] = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
+      }
 
-      for (let y = 0; y < roiH; y++) {
-        for (let x = 0; x < roiW; x++) {
-          const idx = (y * roiW + x) * 4;
-          const r = imgData[idx], g = imgData[idx + 1], b = imgData[idx + 2];
-          const colorDiff = Math.hypot(r - skinR, g - skinG, b - skinB);
-          if (colorDiff > 32) {
-            colScores[x] += 1;
-            rowScores[y] += 1;
+      // 1. Compute vertical edge strength per column (detects straight left & right edges of ANY card)
+      const vertEdgeProfile = new Float32Array(roiW);
+      for (let y = 2; y < roiH - 2; y++) {
+        for (let x = 2; x < roiW - 2; x++) {
+          // Horizontal gradient |I(x+1) - I(x-1)| + |I(x+2) - I(x-2)| highlights straight vertical card borders
+          const gx = Math.abs(gray[y * roiW + (x + 1)] - gray[y * roiW + (x - 1)]) +
+                     0.5 * Math.abs(gray[y * roiW + (x + 2)] - gray[y * roiW + (x - 2)]);
+          if (gx > 12) {
+            vertEdgeProfile[x] += gx;
           }
         }
       }
 
-      // Find contiguous horizontal span near center where card pixels dominate (>35% of ROI height)
-      const minColHits = roiH * 0.35;
-      const midX = Math.floor(roiW / 2);
-      let left = midX, right = midX;
-      while (left > 0 && colScores[left - 1] >= minColHits) left--;
-      while (right < roiW - 1 && colScores[right + 1] >= minColHits) right++;
+      // Smooth vertical edge profile slightly (3px window) to bridge rounded card corners
+      const smoothVert = new Float32Array(roiW);
+      for (let x = 1; x < roiW - 1; x++) {
+        smoothVert[x] = (vertEdgeProfile[x - 1] + vertEdgeProfile[x] * 2 + vertEdgeProfile[x + 1]) / 4;
+      }
 
-      // Find contiguous vertical span where card pixels dominate (>35% of detected card width)
-      const detectedW = right - left;
-      if (detectedW < faceW * 0.30) return null;
+      // Search for strongest left edge in left half (10% to 42% of ROI) and strongest right edge in right half (58% to 90% of ROI)
+      // Exclude the outermost 8% where side hair/temples meet the background
+      const leftStart = Math.floor(roiW * 0.08);
+      const leftEnd = Math.floor(roiW * 0.42);
+      const rightStart = Math.floor(roiW * 0.58);
+      const rightEnd = Math.floor(roiW * 0.92);
 
-      const minRowHits = detectedW * 0.35;
-      const midY = Math.floor(roiH / 2);
-      let top = midY, bottom = midY;
-      while (top > 0 && rowScores[top - 1] >= minRowHits) top--;
-      while (bottom < roiH - 1 && rowScores[bottom + 1] >= minRowHits) bottom++;
+      let bestLeftX = -1, maxLeftScore = 0;
+      for (let x = leftStart; x <= leftEnd; x++) {
+        if (smoothVert[x] > maxLeftScore) {
+          maxLeftScore = smoothVert[x];
+          bestLeftX = x;
+        }
+      }
+
+      let bestRightX = -1, maxRightScore = 0;
+      for (let x = rightStart; x <= rightEnd; x++) {
+        if (smoothVert[x] > maxRightScore) {
+          maxRightScore = smoothVert[x];
+          bestRightX = x;
+        }
+      }
+
+      // Require clear vertical edge contrast (prevents triggering on an empty bare forehead)
+      const avgEdgePerRow = (maxLeftScore + maxRightScore) / (2 * roiH);
+      if (bestLeftX < 0 || bestRightX < 0 || avgEdgePerRow < 8.0) {
+        return null;
+      }
+
+      const detectedW = bestRightX - bestLeftX;
+      if (detectedW < faceW * 0.32 || detectedW > faceW * 0.85) {
+        return null;
+      }
+
+      // 2. Compute horizontal edge strength between bestLeftX and bestRightX to locate bottom & top edges of card
+      const horizEdgeProfile = new Float32Array(roiH);
+      for (let y = 2; y < roiH - 2; y++) {
+        for (let x = bestLeftX + 2; x < bestRightX - 2; x++) {
+          const gy = Math.abs(gray[(y + 1) * roiW + x] - gray[(y - 1) * roiW + x]);
+          if (gy > 10) {
+            horizEdgeProfile[y] += gy;
+          }
+        }
+      }
+
+      // Bottom edge of card sits in the lower half of the forehead ROI
+      let bestBottomY = roiH - 2, maxBottomScore = 0;
+      for (let y = Math.floor(roiH * 0.55); y < roiH - 1; y++) {
+        if (horizEdgeProfile[y] > maxBottomScore) {
+          maxBottomScore = horizEdgeProfile[y];
+          bestBottomY = y;
+        }
+      }
+
+      // Top edge of card sits in the upper half of the forehead ROI (or derived from standard card ratio 1.586 if fingers cover top)
+      let bestTopY = Math.max(0, bestBottomY - Math.round(detectedW / 1.586));
+      let maxTopScore = 0;
+      for (let y = 2; y < Math.floor(roiH * 0.45); y++) {
+        if (horizEdgeProfile[y] > maxTopScore) {
+          maxTopScore = horizEdgeProfile[y];
+          bestTopY = y;
+        }
+      }
 
       return {
-        x: roiX1 + left,
-        y: roiY1 + top,
-        width: right - left,
-        height: Math.max(bottom - top, Math.round((right - left) / 1.586))
+        x: roiX1 + bestLeftX,
+        y: roiY1 + bestTopY,
+        width: detectedW,
+        height: Math.max(16, bestBottomY - bestTopY)
       };
     }
 
-    function runPrecisionCardAnalysis() {
+    function runEdgeCardAnalysis() {
       const w = canvasElement.width;
       const h = canvasElement.height;
       const landmarks = currentLandmarks;
@@ -258,13 +302,13 @@
       const pt356 = { x: p356.x * w, y: p356.y * h };
       const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
 
-      const cardBox = detectCardOnForehead(fullCtx, w, h, landmarks);
+      const cardBox = detectCardByEdges(fullCtx, w, h, landmarks);
 
-      if (!cardBox || cardBox.width < facePixelWidth * 0.30) {
-        alert("Could not clearly detect the card edges on your forehead. Make sure the card is flat against your forehead above your eyebrows with good lighting, then try again.");
+      if (!cardBox) {
+        alert("Could not clearly detect the card edges on your forehead. Hold the card horizontally flat above your eyebrows in good lighting and try again.");
         statusPill.className = "bg-rose-500 text-white font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
         statusIcon.innerText = "❌";
-        statusText.innerText = "Card not detected - Retake";
+        statusText.innerText = "Card edges not found - Retake";
         return;
       }
 
@@ -287,7 +331,7 @@
       canvasCtx.stroke();
       canvasCtx.restore();
 
-      // Determine if card was held horizontally (85.6mm wide) or vertically (53.98mm wide)
+      // Determine horizontal (85.6mm) vs vertical (53.98mm) orientation
       const isVertical = cardBox.height > cardBox.width * 1.15;
       const realCardWidthMm = isVertical ? CARD_SHORT_EDGE_MM : CARD_LONG_EDGE_MM;
 
