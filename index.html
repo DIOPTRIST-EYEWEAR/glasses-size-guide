@@ -15,14 +15,14 @@
     <!-- Header -->
     <div class="text-center space-y-1">
       <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
-      <p class="text-slate-400 text-sm">Hold any standard card horizontally against your forehead & capture</p>
+      <p class="text-slate-400 text-sm">Hold any standard card flat against your forehead (50–70 cm away)</p>
     </div>
 
     <!-- Status Badge (Above Camera) -->
     <div class="flex justify-center">
       <div id="statusPill" class="bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2 transition-all duration-300">
         <span id="statusIcon">💳</span>
-        <span id="statusText">Hold card horizontally on forehead</span>
+        <span id="statusText">Hold card flat on forehead</span>
       </div>
     </div>
 
@@ -162,7 +162,7 @@
       return deg;
     }
 
-    // Outermost-inward Sobel Edge Detector: finds the true outer left & right card borders without stopping on internal text/logos
+    // Detects cards whether centered, displaced left/right, OR held vertically/horizontally
     function detectCardByEdges(ctx, w, h, landmarks) {
       const p127 = landmarks[127];
       const p356 = landmarks[356];
@@ -176,11 +176,11 @@
       const faceH = Math.hypot((pChin.x - pNose.x) * w, (pChin.y - pNose.y) * h) * 1.55;
       const centerX = ((p127.x + p356.x) / 2) * w;
 
-      // Forehead search ROI: bounded strictly inside temples (0.44 * faceW) and above eyebrows
-      const roiX1 = Math.max(2, Math.round(centerX - faceW * 0.44));
-      const roiX2 = Math.min(w - 3, Math.round(centerX + faceW * 0.44));
-      const roiY2 = Math.max(12, Math.round(browY - faceH * 0.04));
-      const roiY1 = Math.max(2, Math.round(browY - faceH * 0.40));
+      // Wide forehead ROI (allows off-center left/right displacement AND taller upward reach for vertical cards)
+      const roiX1 = Math.max(2, Math.round(centerX - faceW * 0.56));
+      const roiX2 = Math.min(w - 3, Math.round(centerX + faceW * 0.56));
+      const roiY2 = Math.max(12, Math.round(browY - faceH * 0.03));
+      const roiY1 = Math.max(2, Math.round(browY - faceH * 0.52));
 
       const roiW = roiX2 - roiX1;
       const roiH = roiY2 - roiY1;
@@ -188,16 +188,20 @@
 
       const imgData = ctx.getImageData(roiX1, roiY1, roiW, roiH).data;
 
-      // Convert ROI to grayscale luminance array
+      // Convert ROI to grayscale luminance
       const gray = new Float32Array(roiW * roiH);
       for (let i = 0; i < roiW * roiH; i++) {
         const idx = i * 4;
         gray[i] = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
       }
 
-      // Compute vertical edge strength per column
+      // Focus vertical edge scan in the lower 65% of the ROI (where both horizontal AND vertical cards sit on the forehead, avoiding fingers at the top)
+      const scanYStart = Math.floor(roiH * 0.30);
+      const scanYEnd = roiH - 2;
+      const scanHeight = Math.max(1, scanYEnd - scanYStart);
+
       const vertEdgeProfile = new Float32Array(roiW);
-      for (let y = 2; y < roiH - 2; y++) {
+      for (let y = scanYStart; y < scanYEnd; y++) {
         for (let x = 2; x < roiW - 2; x++) {
           const gx = Math.abs(gray[y * roiW + (x + 1)] - gray[y * roiW + (x - 1)]) +
                      0.5 * Math.abs(gray[y * roiW + (x + 2)] - gray[y * roiW + (x - 2)]);
@@ -207,82 +211,93 @@
         }
       }
 
-      // Smooth vertical edge profile across 3px to bridge rounded card corners
       const smoothVert = new Float32Array(roiW);
       for (let x = 1; x < roiW - 1; x++) {
         smoothVert[x] = (vertEdgeProfile[x - 1] + vertEdgeProfile[x] * 2 + vertEdgeProfile[x + 1]) / 4;
       }
 
-      // Scan OUTWARD-INWARD from the forehead borders toward the center so we lock onto the card's OUTER borders, not inner logos!
-      const edgeThreshold = roiH * 8.5;
-      const outerMargin = Math.floor(roiW * 0.06);
-      const innerLimitLeft = Math.floor(roiW * 0.36);
-      const innerLimitRight = Math.floor(roiW * 0.64);
-
-      let bestLeftX = -1;
-      for (let x = outerMargin; x <= innerLimitLeft; x++) {
-        if (smoothVert[x] >= edgeThreshold) {
-          // Refine to local peak within 4px
-          let localMax = smoothVert[x], peakX = x;
-          for (let k = x; k <= Math.min(innerLimitLeft, x + 4); k++) {
-            if (smoothVert[k] > localMax) { localMax = smoothVert[k]; peakX = k; }
-          }
-          bestLeftX = peakX;
-          break;
+      // Collect all strong vertical edge peaks across the entire forehead width (allows displaced left/right cards!)
+      const edgeThreshold = scanHeight * 7.5;
+      const peaks = [];
+      for (let x = 4; x < roiW - 4; x++) {
+        if (smoothVert[x] >= edgeThreshold &&
+            smoothVert[x] >= smoothVert[x - 1] &&
+            smoothVert[x] >= smoothVert[x + 1]) {
+          peaks.push({ x, score: smoothVert[x] });
         }
       }
 
-      let bestRightX = -1;
-      for (let x = roiW - 1 - outerMargin; x >= innerLimitRight; x--) {
-        if (smoothVert[x] >= edgeThreshold) {
-          // Refine to local peak within 4px
-          let localMax = smoothVert[x], peakX = x;
-          for (let k = x; k >= Math.max(innerLimitRight, x - 4); k--) {
-            if (smoothVert[k] > localMax) { localMax = smoothVert[k]; peakX = k; }
+      if (peaks.length < 2) return null;
+
+      // Valid physical pixel widths for a card relative to human head width (120mm - 165mm):
+      // Horizontal card (85.6mm) = ~46% to 72% of faceW
+      // Vertical card (53.98mm)  = ~29% to 45% of faceW
+      const minVertW = faceW * 0.29;
+      const maxVertW = faceW * 0.45;
+      const minHorizW = faceW * 0.46;
+      const maxHorizW = faceW * 0.72;
+
+      // Evaluate all candidate (left, right) pairs that match a standard card width (either horizontal or vertical)
+      let bestPair = null;
+      let bestPairScore = -1;
+
+      for (let i = 0; i < peaks.length; i++) {
+        for (let j = i + 1; j < peaks.length; j++) {
+          const span = peaks[j].x - peaks[i].x;
+          const isHoriz = span >= minHorizW && span <= maxHorizW;
+          const isVert = span >= minVertW && span <= maxVertW;
+          if (!isHoriz && !isVert) continue;
+
+          // Score pair by edge strength, favoring outer physical borders over inner text lines
+          const pairMid = (peaks[i].x + peaks[j].x) / 2;
+          const distFromCenterPenalty = Math.abs(pairMid - roiW / 2) * 0.15;
+          const score = peaks[i].score + peaks[j].score - distFromCenterPenalty;
+
+          if (score > bestPairScore) {
+            bestPairScore = score;
+            bestPair = {
+              leftX: peaks[i].x,
+              rightX: peaks[j].x,
+              width: span,
+              isVertical: isVert
+            };
           }
-          bestRightX = peakX;
-          break;
         }
       }
 
-      if (bestLeftX < 0 || bestRightX < 0) return null;
+      if (!bestPair) return null;
 
-      const detectedW = bestRightX - bestLeftX;
-      if (detectedW < faceW * 0.32 || detectedW > faceW * 0.85) return null;
-
-      // Locate bottom edge of card using horizontal gradient inside [bestLeftX, bestRightX]
+      // Locate bottom edge of card using horizontal gradient between bestPair.leftX and bestPair.rightX
       const horizEdgeProfile = new Float32Array(roiH);
       for (let y = 2; y < roiH - 2; y++) {
-        for (let x = bestLeftX + 2; x < bestRightX - 2; x++) {
+        for (let x = bestPair.leftX + 2; x < bestPair.rightX - 2; x++) {
           const gy = Math.abs(gray[(y + 1) * roiW + x] - gray[(y - 1) * roiW + x]);
           if (gy > 10) horizEdgeProfile[y] += gy;
         }
       }
 
-      // Scan from bottom of forehead ROI upward to find the card's bottom edge
       let bestBottomY = roiH - 2;
-      const horizThreshold = detectedW * 7.5;
-      for (let y = roiH - 3; y >= Math.floor(roiH * 0.50); y--) {
+      const horizThreshold = bestPair.width * 7.0;
+      for (let y = roiH - 2; y >= Math.floor(roiH * 0.55); y--) {
         if (horizEdgeProfile[y] >= horizThreshold) {
           bestBottomY = y;
           break;
         }
       }
 
-      // Check if card is held vertically (width < 46% of face width) vs horizontally
-      const isVertical = detectedW < faceW * 0.46;
-      const expectedHeight = isVertical
-        ? Math.round(detectedW * CARD_ASPECT)
-        : Math.round(detectedW / CARD_ASPECT);
+      // Compute exact card height from ISO aspect ratio (1.5858)
+      const expectedHeight = bestPair.isVertical
+        ? Math.round(bestPair.width * CARD_ASPECT)
+        : Math.round(bestPair.width / CARD_ASPECT);
 
       const bestTopY = Math.max(0, bestBottomY - expectedHeight);
 
       return {
-        x: roiX1 + bestLeftX,
+        x: roiX1 + bestPair.leftX,
         y: roiY1 + bestTopY,
-        width: detectedW,
-        height: bestBottomY - bestTopY,
-        isVertical
+        width: bestPair.width,
+        height: expectedHeight,
+        isVertical: bestPair.isVertical
       };
     }
 
@@ -306,7 +321,7 @@
       const cardBox = detectCardByEdges(fullCtx, w, h, landmarks);
 
       if (!cardBox) {
-        alert("Could not clearly detect the card edges on your forehead. Hold the card horizontally flat above your eyebrows in good lighting and try again.");
+        alert("Could not clearly detect the card edges on your forehead. Hold the card flat above your eyebrows in good lighting (50–70 cm from camera) and try again.");
         statusPill.className = "bg-rose-500 text-white font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
         statusIcon.innerText = "❌";
         statusText.innerText = "Card edges not found - Retake";
@@ -332,12 +347,11 @@
       canvasCtx.stroke();
       canvasCtx.restore();
 
+      // Exact math from validated index (1).html (with automatic horizontal vs vertical card edge selection)
       const realCardWidthMm = cardBox.isVertical ? CARD_SHORT_EDGE_MM : CARD_LONG_EDGE_MM;
       const scaleFrontal = cardBox.width / realCardWidthMm;
       const rawMm = facePixelWidth / scaleFrontal;
-
-      // Calibrated depth parallax factor (1.06 accounts for cheek-to-forehead plane without close-up overestimation)
-      const trueWidthMm = rawMm * 1.06;
+      const trueWidthMm = rawMm * 1.125;
 
       if (trueWidthMm < 133.0) {
         sizeOutput.innerText = "SMALL";
@@ -349,7 +363,7 @@
         sizeOutput.innerText = "LARGE";
         sizeOutput.className = "text-3xl font-extrabold text-purple-400";
       }
-      mmSubtext.innerText = `Measured Head Width: ${trueWidthMm.toFixed(1)} mm`;
+      mmSubtext.innerText = `Measured Head Width: ${trueWidthMm.toFixed(1)} mm (${cardBox.isVertical ? 'Vertical' : 'Horizontal'} Card)`;
 
       // Multi-factor face shape classification
       const p10 = landmarks[10], p152 = landmarks[152];
@@ -454,7 +468,7 @@
         const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
         const browY = Math.min(pBrowL.y, pBrowR.y) * h;
 
-        const guideW = facePixelWidth * 0.60;
+        const guideW = facePixelWidth * 0.58;
         const guideH = guideW / CARD_ASPECT;
         const boxX = ((p127.x + p356.x) / 2) * w - (guideW / 2);
         const boxY = browY - guideH - (facePixelWidth * 0.04);
@@ -465,9 +479,21 @@
         canvasCtx.strokeRect(boxX, boxY, guideW, guideH);
         canvasCtx.setLineDash([]);
 
-        statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-        statusIcon.innerText = "✅";
-        statusText.innerText = "Ready - Tap Capture";
+        // Distance guidance to keep user in the accurate 50–70 cm sweet spot
+        const faceRatio = facePixelWidth / w;
+        if (faceRatio > 0.34) {
+          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+          statusIcon.innerText = "↔️";
+          statusText.innerText = "Too close — move back to 50–70 cm";
+        } else if (faceRatio < 0.16) {
+          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+          statusIcon.innerText = "↔️";
+          statusText.innerText = "Move slightly closer (50–70 cm)";
+        } else {
+          statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+          statusIcon.innerText = "✅";
+          statusText.innerText = "Optimal distance — Tap Capture";
+        }
       } else {
         currentLandmarks = null;
         statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
