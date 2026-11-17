@@ -14,7 +14,9 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'GROQ_API_KEY is not set in Vercel' });
     }
 
-    const prompt = `Locate the rectangular physical card (credit card, bank card, or ID card) held against the person's forehead. Return ONLY valid JSON with normalized bounding box coordinates from 0 to 1000: {"ymin": number, "xmin": number, "ymax": number, "xmax": number}`;
+    const prompt = `Locate the rectangular physical card (credit card, bank card, or ID card) held against the person's forehead. 
+Return ONLY a JSON object using these exact 4 keys with integer values from 0 to 1000:
+{"ymin": 100, "xmin": 200, "ymax": 300, "xmax": 400}`;
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -46,8 +48,29 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Empty response from Groq' });
     }
 
-    const box = JSON.parse(textResult);
-    return res.status(200).json({ box });
+    const parsed = JSON.parse(textResult);
+
+    // Handle any format Qwen might return (object, nested box, or [ymin, xmin, ymax, xmax] array)
+    let ymin, xmin, ymax, xmax;
+    const target = parsed.box || parsed.bounding_box || parsed.coordinates || parsed;
+
+    if (Array.isArray(target) && target.length >= 4) {
+      [ymin, xmin, ymax, xmax] = target.map(Number);
+    } else if (Array.isArray(target.bbox_2d) && target.bbox_2d.length >= 4) {
+      // Qwen native 2D box format is [xmin, ymin, xmax, ymax]
+      [xmin, ymin, xmax, ymax] = target.bbox_2d.map(Number);
+    } else {
+      ymin = Number(target.ymin ?? target.y_min ?? target.top);
+      xmin = Number(target.xmin ?? target.x_min ?? target.left);
+      ymax = Number(target.ymax ?? target.y_max ?? target.bottom);
+      xmax = Number(target.xmax ?? target.x_max ?? target.right);
+    }
+
+    if ([ymin, xmin, ymax, xmax].some(v => Number.isNaN(v)) || xmax <= xmin || ymax <= ymin) {
+      return res.status(422).json({ error: `Unexpected coordinate format from AI: ${textResult}` });
+    }
+
+    return res.status(200).json({ box: { ymin, xmin, ymax, xmax } });
 
   } catch (error) {
     console.error('Card detection error:', error);
