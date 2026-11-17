@@ -105,7 +105,6 @@
 
     let isCaptured = false;
     let currentLandmarks = null;
-    let frozenImage = null;
 
     const FACE_RULES = {
       "Round": {
@@ -152,7 +151,6 @@
         captureBtn.className = "w-full py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2 border border-slate-700";
       } else {
         isCaptured = false;
-        frozenImage = null;
         resultsContainer.classList.add('hidden');
         captureBtn.innerHTML = "<span>📸 Capture & Analyze</span>";
         captureBtn.className = "w-full py-3.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2";
@@ -177,7 +175,6 @@
       const h = canvasElement.height;
       const landmarks = currentLandmarks;
 
-      // Capture clean un-annotated frame for AI detection
       const offscreen = document.createElement('canvas');
       offscreen.width = w;
       offscreen.height = h;
@@ -199,25 +196,21 @@
 
         const { ymin, xmin, ymax, xmax } = data.box;
 
-        // Convert 0-1000 normalized AI box back to actual canvas pixels
         const cardX = (xmin / 1000) * w;
         const cardY = (ymin / 1000) * h;
         const cardPixelWidth = ((xmax - xmin) / 1000) * w;
         const cardPixelHeight = ((ymax - ymin) / 1000) * h;
 
-        // Redraw frozen video frame + AI-snapped bounding box
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, w, h);
         canvasCtx.drawImage(offscreen, 0, 0, w, h);
 
-        // Draw AI-Detected Green Card Box
         canvasCtx.strokeStyle = '#22c55e';
         canvasCtx.lineWidth = 4;
         canvasCtx.strokeRect(cardX, cardY, cardPixelWidth, cardPixelHeight);
         canvasCtx.fillStyle = 'rgba(34, 197, 94, 0.18)';
         canvasCtx.fillRect(cardX, cardY, cardPixelWidth, cardPixelHeight);
 
-        // Draw Temple Line (#127 to #356)
         const p127 = landmarks[127];
         const p356 = landmarks[356];
         const pt127 = { x: p127.x * w, y: p127.y * h };
@@ -231,11 +224,10 @@
         canvasCtx.stroke();
         canvasCtx.restore();
 
-        // Calculate Head Width from AI Card Pixel Width
         const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
         const scaleFrontal = cardPixelWidth / CARD_WIDTH_MM;
         const rawMm = facePixelWidth / scaleFrontal;
-        const trueWidthMm = rawMm * 1.125; // Temporal depth parallax offset
+        const trueWidthMm = rawMm * 1.125;
 
         if (trueWidthMm < 133.0) {
           sizeOutput.innerText = "SMALL";
@@ -249,7 +241,6 @@
         }
         mmSubtext.innerText = `Measured Head Width: ${trueWidthMm.toFixed(1)} mm`;
 
-        // Multi-Factor Face Shape Scoring
         const p10 = landmarks[10], p152 = landmarks[152];
         const p234 = landmarks[234], p454 = landmarks[454];
         const p58 = landmarks[58], p288 = landmarks[288];
@@ -322,7 +313,7 @@
         statusText.innerText = "AI Calibration Complete";
 
       } catch (err) {
-        alert("AI could not clearly see the card. Make sure the card is well-lit and flat on your forehead, then try again.");
+        alert("Detection error: " + err.message);
         statusPill.className = "bg-rose-500 text-white font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
         statusIcon.innerText = "❌";
         statusText.innerText = "Card not detected - Retake";
@@ -357,7 +348,6 @@
         const pt356 = { x: p356.x * w, y: p356.y * h };
         const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
 
-        // Soft visual guide box only (AI snaps exact edges upon capture)
         const guideW = facePixelWidth * 0.58;
         const guideH = guideW / (85.60 / 53.98);
         const boxX = (pForehead.x * w) - (guideW / 2);
