@@ -101,7 +101,7 @@
     const bestChoiceTitle = document.getElementById('bestChoiceTitle');
     const whyItWorksText = document.getElementById('whyItWorksText');
 
-    const CARD_WIDTH_MM = 85.60;
+    const CARD_LONG_EDGE_MM = 85.60;
 
     let isCaptured = false;
     let currentLandmarks = null;
@@ -175,12 +175,18 @@
       const h = canvasElement.height;
       const landmarks = currentLandmarks;
 
-      const offscreen = document.createElement('canvas');
-      offscreen.width = w;
-      offscreen.height = h;
-      const offCtx = offscreen.getContext('2d');
-      offCtx.drawImage(videoElement, 0, 0, w, h);
-      const imageBase64 = offscreen.toDataURL('image/jpeg', 0.8);
+      // Full-res canvas for crisp display
+      const fullCanvas = document.createElement('canvas');
+      fullCanvas.width = w;
+      fullCanvas.height = h;
+      fullCanvas.getContext('2d').drawImage(videoElement, 0, 0, w, h);
+
+      // Compact 640x360 image for Groq API (saves ~75% tokens to prevent rate limits)
+      const aiCanvas = document.createElement('canvas');
+      aiCanvas.width = 640;
+      aiCanvas.height = Math.round(640 * (h / w));
+      aiCanvas.getContext('2d').drawImage(videoElement, 0, 0, aiCanvas.width, aiCanvas.height);
+      const imageBase64 = aiCanvas.toDataURL('image/jpeg', 0.75);
 
       try {
         const res = await fetch('/api/detect-card', {
@@ -203,7 +209,7 @@
 
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, w, h);
-        canvasCtx.drawImage(offscreen, 0, 0, w, h);
+        canvasCtx.drawImage(fullCanvas, 0, 0, w, h);
 
         canvasCtx.strokeStyle = '#22c55e';
         canvasCtx.lineWidth = 4;
@@ -224,8 +230,10 @@
         canvasCtx.stroke();
         canvasCtx.restore();
 
+        // Use the longest side of the card (works whether held horizontally OR vertically!)
+        const cardLongSidePx = Math.max(cardPixelWidth, cardPixelHeight);
         const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
-        const scaleFrontal = cardPixelWidth / CARD_WIDTH_MM;
+        const scaleFrontal = cardLongSidePx / CARD_LONG_EDGE_MM;
         const rawMm = facePixelWidth / scaleFrontal;
         const trueWidthMm = rawMm * 1.125;
 
