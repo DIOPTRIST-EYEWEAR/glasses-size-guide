@@ -9,40 +9,34 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing image data' });
     }
 
-    // Strip the data:image/jpeg;base64, prefix
-    const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const apiKey = process.env.GROQ_API_KEY;
+    const prompt = `Locate the rectangular physical card (credit card, bank card, or ID card) held against the person's forehead. Return ONLY valid JSON with normalized bounding box coordinates from 0 to 1000: {"ymin": number, "xmin": number, "ymax": number, "xmax": number}`;
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-
-    const prompt = `
-      Locate the rectangular physical card (credit card, bank card, or ID card) being held against the person's forehead.
-      Return ONLY a JSON object with the exact bounding box coordinates normalized from 0 to 1000:
-      {"ymin": number, "xmin": number, "ymax": number, "xmax": number}
-    `;
-
-    const response = await fetch(url, {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: 'image/jpeg', data: base64Data } }
+        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: imageBase64 } }
           ]
         }],
-        generationConfig: {
-          response_mime_type: 'application/json',
-          temperature: 0.1
-        }
+        response_format: { type: 'json_object' },
+        temperature: 0.1
       })
     });
 
     const data = await response.json();
-    const textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const textResult = data.choices?.[0]?.message?.content;
 
     if (!textResult) {
-      throw new Error('Failed to extract card coordinates from AI response.');
+      throw new Error('Failed to extract card coordinates.');
     }
 
     const box = JSON.parse(textResult);
