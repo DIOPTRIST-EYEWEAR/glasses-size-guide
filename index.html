@@ -16,7 +16,7 @@
     <!-- Header -->
     <div class="text-center space-y-1">
       <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
-      <p class="text-slate-400 text-sm">Hold any standard card flat on your forehead (50–70 cm away)</p>
+      <p class="text-slate-400 text-sm">Hold any standard card flat on your forehead (40–60 cm away)</p>
     </div>
 
     <!-- Live Guardrail Pills (Distance + Head Angle) -->
@@ -122,7 +122,7 @@
     let smoothRoll = 0;
     let smoothFacePixelW = null;
     let steadySince = null;
-    const AUTO_CAPTURE_MS = 4000; // 4-second countdown so users have plenty of time to position the card
+    const AUTO_CAPTURE_MS = 4000; // 4-second countdown
 
     function onOpenCvReady() {
       cvReady = true;
@@ -221,8 +221,9 @@
 
       const estDistanceCm = Math.round(9.2 / smoothFaceRatio);
 
-      const isTooClose = smoothFaceRatio > 0.205;
-      const isTooFar = smoothFaceRatio < 0.122;
+      // Strict 40–60 cm sweet spot (9.2 / 40 = 0.230, 9.2 / 60 = 0.153)
+      const isTooClose = smoothFaceRatio > 0.230;
+      const isTooFar = smoothFaceRatio < 0.153;
       const isChinUp = smoothPitch > 0.16;
       const isChinDown = smoothPitch < -0.16;
       const isTurned = smoothYaw > 0.18;
@@ -458,7 +459,11 @@
       const effectiveLongPx = Math.max(cardBox.longSidePx, cardBox.shortSidePx * CARD_ASPECT * 0.96);
       const scaleFrontal = effectiveLongPx / CARD_LONG_EDGE_MM;
       const rawMm = facePixelWidth / scaleFrontal;
-      const trueWidthMm = rawMm * 1.125;
+
+      // Distance-compensated perspective factor keeps head width accurate across 40–60 cm
+      const estDist = Math.round(9.2 / (smoothFaceRatio || 0.184));
+      const parallaxFactor = Math.max(1.07, Math.min(1.145, 1.132 - (estDist - 46) * 0.0018));
+      const trueWidthMm = rawMm * parallaxFactor;
 
       if (trueWidthMm < 133.0) {
         sizeOutput.innerText = "SMALL";
@@ -611,11 +616,11 @@
           if (posture.isTooClose) {
             statusPill.className = "bg-rose-500 text-white font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
             statusIcon.innerText = "🚫";
-            statusText.innerText = "Too close! Move back to 50–70 cm";
+            statusText.innerText = "Too close! Move back to 40–60 cm";
           } else if (posture.isTooFar) {
             statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
             statusIcon.innerText = "↔️";
-            statusText.innerText = "Too far — move closer (50–70 cm)";
+            statusText.innerText = "Too far — move closer (40–60 cm)";
           } else if (posture.isChinUp) {
             statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
             statusIcon.innerText = "⬇️";
