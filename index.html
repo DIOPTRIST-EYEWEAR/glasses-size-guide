@@ -16,7 +16,7 @@
     <!-- Header -->
     <div class="text-center space-y-1">
       <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
-      <p class="text-slate-400 text-sm">Hold any standard card flat against your forehead (50–70 cm away)</p>
+      <p class="text-slate-400 text-sm">Hold any standard card flat on your forehead (50–70 cm away)</p>
     </div>
 
     <!-- Live Guardrail Pills (Distance + Head Angle) -->
@@ -42,7 +42,7 @@
 
     <!-- Capture Action Button -->
     <div class="flex justify-center">
-      <button id="captureBtn" disabled class="w-full py-3.5 bg-slate-700 text-slate-400 cursor-not-allowed font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2">
+      <button id="captureBtn" type="button" disabled class="w-full py-3.5 bg-slate-700 text-slate-400 cursor-not-allowed font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2">
         <span>📸 Align Distance & Head Angle First</span>
       </button>
     </div>
@@ -115,13 +115,14 @@
     let cvReady = false;
     let canCaptureNow = false;
 
-    // Smoothed posture state (prevents 30fps landmark flicker from blocking clicks)
+    // Smoothed posture & hands-free countdown state
     let smoothFaceRatio = null;
     let smoothPitch = 0;
     let smoothYaw = 0;
     let smoothRoll = 0;
     let smoothFacePixelW = null;
-    let lastValidTimestamp = 0;
+    let steadySince = null;
+    const AUTO_CAPTURE_MS = 2200; // Auto-captures after 2.2s of steady alignment
 
     function onOpenCvReady() {
       cvReady = true;
@@ -150,17 +151,31 @@
       }
     };
 
-    captureBtn.addEventListener('click', () => {
-      if (!isCaptured) {
-        if (!currentLandmarks || !canCaptureNow) return;
+    function triggerCapture() {
+      if (isCaptured || !currentLandmarks) return;
+      steadySince = null;
+      try {
         const success = runRotatedCardAnalysis();
         if (success) {
           isCaptured = true;
+          captureBtn.disabled = false;
           captureBtn.innerHTML = "<span>🔄 Retake Photo</span>";
-          captureBtn.className = "w-full py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2 border border-slate-700";
+          captureBtn.className = "w-full py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2 border border-slate-700 cursor-pointer";
         }
+      } catch (err) {
+        console.error("Capture analysis error:", err);
+        alert("Analysis retry needed — hold the card flat on your forehead and try again.");
+      }
+    }
+
+    // Use pointerdown + click so tapping while holding a card triggers instantaneously without losing focus
+    captureBtn.addEventListener('click', () => {
+      if (!isCaptured) {
+        if (!currentLandmarks) return;
+        triggerCapture();
       } else {
         isCaptured = false;
+        steadySince = null;
         resultsContainer.classList.add('hidden');
       }
     });
@@ -175,7 +190,6 @@
       return deg;
     }
 
-    // Calibrated 3D Pose (Pitch, Yaw, Roll) + True 50–70 cm Distance Check with Exponential Smoothing
     function checkPostureAndDistance(landmarks, w, h) {
       const p127 = landmarks[127];
       const p356 = landmarks[356];
@@ -199,7 +213,6 @@
       const eyeDy = (p263.y - p33.y) * h;
       const rawRoll = Math.abs(Math.atan2(eyeDy, eyeDx) * 180 / Math.PI);
 
-      // Exponential moving average (alpha = 0.25) eliminates frame-to-frame jitter
       const a = 0.25;
       smoothFacePixelW = smoothFacePixelW === null ? rawFacePixelWidth : smoothFacePixelW * (1 - a) + rawFacePixelWidth * a;
       smoothFaceRatio = smoothFaceRatio === null ? rawFaceRatio : smoothFaceRatio * (1 - a) + rawFaceRatio * a;
@@ -209,7 +222,6 @@
 
       const estDistanceCm = Math.round(9.2 / smoothFaceRatio);
 
-      // Natural, stable tolerances (~45–75 cm, ±16% pitch, ±18% yaw, ±9° roll)
       const isTooClose = smoothFaceRatio > 0.205;
       const isTooFar = smoothFaceRatio < 0.122;
       const isChinUp = smoothPitch > 0.16;
@@ -217,13 +229,7 @@
       const isTurned = smoothYaw > 0.18;
       const isTilted = smoothRoll > 9.0;
 
-      const instantValid = !isTooClose && !isTooFar && !isChinDown && !isChinUp && !isTurned && !isTilted;
-      if (instantValid) {
-        lastValidTimestamp = performance.now();
-      }
-
-      // 450ms grace window so reaching for the mouse/tap never locks the button mid-click
-      const isValid = instantValid || (performance.now() - lastValidTimestamp < 450);
+      const isValid = !isTooClose && !isTooFar && !isChinDown && !isChinUp && !isTurned && !isTilted;
 
       return {
         facePixelWidth: smoothFacePixelW,
@@ -238,7 +244,7 @@
       };
     }
 
-    // Color-agnostic structural detector: finds the card's rotated 4-corner geometry via multi-pass Canny + adaptive threshold + minAreaRect
+    // Color-agnostic OpenCV contour detector + finger-safe edge fallback
     function detectRotatedCard(fullCanvas, w, h, landmarks) {
       const p127 = landmarks[127];
       const p356 = landmarks[356];
@@ -259,111 +265,144 @@
 
       const roiW = roiX2 - roiX1;
       const roiH = roiY2 - roiY1;
-      if (roiW <= 40 || roiH <= 30 || !cvReady || typeof cv === 'undefined') return null;
-
-      const src = cv.imread(fullCanvas);
-      const roi = src.roi(new cv.Rect(roiX1, roiY1, roiW, roiH));
-      const gray = new cv.Mat();
-      const enhanced = new cv.Mat();
-      const blurred = new cv.Mat();
-
-      cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
-      const clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
-      clahe.apply(gray, enhanced);
-      clahe.delete();
-
-      cv.GaussianBlur(enhanced, blurred, new cv.Size(5, 5), 0);
+      if (roiW <= 40 || roiH <= 30) return null;
 
       let bestBox = null;
       let bestScore = -1;
 
-      const closeKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
+      if (cvReady && typeof cv !== 'undefined') {
+        const src = cv.imread(fullCanvas);
+        const roi = src.roi(new cv.Rect(roiX1, roiY1, roiW, roiH));
+        const gray = new cv.Mat();
+        const enhanced = new cv.Mat();
+        const blurred = new cv.Mat();
 
-      function scanContours(binaryMat) {
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-        cv.findContours(binaryMat, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+        cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
+        const clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
+        clahe.apply(gray, enhanced);
+        clahe.delete();
 
-        for (let i = 0; i < contours.size(); i++) {
-          const cnt = contours.get(i);
-          const rotRect = cv.minAreaRect(cnt);
-          const rw = rotRect.size.width;
-          const rh = rotRect.size.height;
-          const longSide = Math.max(rw, rh);
-          const shortSide = Math.min(rw, rh);
+        cv.GaussianBlur(enhanced, blurred, new cv.Size(5, 5), 0);
+        const closeKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
 
-          if (shortSide <= 12) {
+        const scanContours = (binaryMat) => {
+          const contours = new cv.MatVector();
+          const hierarchy = new cv.Mat();
+          cv.findContours(binaryMat, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+          for (let i = 0; i < contours.size(); i++) {
+            const cnt = contours.get(i);
+            const rotRect = cv.minAreaRect(cnt);
+            const rw = rotRect.size.width;
+            const rh = rotRect.size.height;
+            const longSide = Math.max(rw, rh);
+            const shortSide = Math.min(rw, rh);
+
+            if (shortSide <= 12) { cnt.delete(); continue; }
+            if (longSide < faceW * 0.45 || longSide > faceW * 0.78) { cnt.delete(); continue; }
+            if (shortSide < faceW * 0.25 || shortSide > faceW * 0.52) { cnt.delete(); continue; }
+
+            const aspect = longSide / shortSide;
+            if (aspect < 1.25 || aspect > 1.95) { cnt.delete(); continue; }
+
+            const arcLen = cv.arcLength(cnt, true);
+            const boxPerim = 2 * (rw + rh);
+            const edgeSupport = Math.min(1.5, arcLen / (boxPerim || 1));
+            if (edgeSupport < 0.42) { cnt.delete(); continue; }
+
+            const aspectAccuracy = 1 - Math.min(1, Math.abs(aspect - CARD_ASPECT) / 0.45);
+            const centerOffsetPenalty = Math.abs(rotRect.center.x - roiW / 2) * 0.25;
+            const score = (aspectAccuracy * 220) + (edgeSupport * 90) + (longSide * 0.4) - centerOffsetPenalty;
+
+            if (score > bestScore) {
+              bestScore = score;
+              const vertices = cv.RotatedRect.points(rotRect);
+              bestBox = {
+                points: vertices.map(pt => ({ x: pt.x + roiX1, y: pt.y + roiY1 })),
+                longSidePx: longSide,
+                shortSidePx: shortSide
+              };
+            }
             cnt.delete();
-            continue;
           }
+          contours.delete();
+          hierarchy.delete();
+        };
 
-          if (longSide < faceW * 0.45 || longSide > faceW * 0.78) {
-            cnt.delete();
-            continue;
+        const thresholdPairs = [[18, 60], [30, 95], [45, 130]];
+        for (const [lowT, highT] of thresholdPairs) {
+          const edges = new cv.Mat();
+          const closed = new cv.Mat();
+          cv.Canny(blurred, edges, lowT, highT);
+          cv.morphologyEx(edges, closed, cv.MORPH_CLOSE, closeKernel);
+          scanContours(closed);
+          edges.delete();
+          closed.delete();
+        }
+
+        if (!bestBox) {
+          const adapt = new cv.Mat();
+          const adaptClosed = new cv.Mat();
+          cv.adaptiveThreshold(blurred, adapt, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 4);
+          cv.morphologyEx(adapt, adaptClosed, cv.MORPH_CLOSE, closeKernel);
+          scanContours(adaptClosed);
+          adapt.delete();
+          adaptClosed.delete();
+        }
+
+        src.delete(); roi.delete(); gray.delete(); enhanced.delete(); blurred.delete();
+        closeKernel.delete();
+      }
+
+      // Finger-safe fallback: if fingers pinching the top edge broke the top contour, locate the left/right card sides & bottom edge
+      if (!bestBox) {
+        const ctx = fullCanvas.getContext('2d');
+        const imgData = ctx.getImageData(roiX1, roiY1, roiW, roiH).data;
+        const grayArr = new Float32Array(roiW * roiH);
+        for (let i = 0; i < roiW * roiH; i++) {
+          const idx = i * 4;
+          grayArr[i] = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
+        }
+
+        const scanY1 = Math.floor(roiH * 0.42);
+        const scanY2 = roiH - 2;
+        const vertProfile = new Float32Array(roiW);
+        for (let y = scanY1; y < scanY2; y++) {
+          for (let x = 2; x < roiW - 2; x++) {
+            const gx = Math.abs(grayArr[y * roiW + (x + 1)] - grayArr[y * roiW + (x - 1)]);
+            if (gx > 12) vertProfile[x] += gx;
           }
+        }
 
-          if (shortSide < faceW * 0.25 || shortSide > faceW * 0.52) {
-            cnt.delete();
-            continue;
-          }
+        let leftX = -1, maxL = 0;
+        let rightX = -1, maxR = 0;
+        const midX = Math.floor(roiW / 2);
+        for (let x = Math.floor(roiW * 0.08); x < midX - Math.floor(faceW * 0.18); x++) {
+          if (vertProfile[x] > maxL) { maxL = vertProfile[x]; leftX = x; }
+        }
+        for (let x = midX + Math.floor(faceW * 0.18); x < Math.floor(roiW * 0.92); x++) {
+          if (vertProfile[x] > maxR) { maxR = vertProfile[x]; rightX = x; }
+        }
 
-          const aspect = longSide / shortSide;
-          if (aspect < 1.25 || aspect > 1.95) {
-            cnt.delete();
-            continue;
-          }
-
-          const arcLen = cv.arcLength(cnt, true);
-          const boxPerim = 2 * (rw + rh);
-          const edgeSupport = Math.min(1.5, arcLen / (boxPerim || 1));
-          if (edgeSupport < 0.45) {
-            cnt.delete();
-            continue;
-          }
-
-          const aspectAccuracy = 1 - Math.min(1, Math.abs(aspect - CARD_ASPECT) / 0.45);
-          const rectCenterX = rotRect.center.x;
-          const centerOffsetPenalty = Math.abs(rectCenterX - roiW / 2) * 0.25;
-          const score = (aspectAccuracy * 220) + (edgeSupport * 90) + (longSide * 0.4) - centerOffsetPenalty;
-
-          if (score > bestScore) {
-            bestScore = score;
-            const vertices = cv.RotatedRect.points(rotRect);
+        if (leftX !== -1 && rightX !== -1) {
+          const span = rightX - leftX;
+          if (span >= faceW * 0.45 && span <= faceW * 0.78) {
+            const hSpan = Math.round(span / CARD_ASPECT);
+            const bottomY = roiH - 4;
+            const topY = Math.max(0, bottomY - hSpan);
             bestBox = {
-              points: vertices.map(pt => ({ x: pt.x + roiX1, y: pt.y + roiY1 })),
-              longSidePx: longSide,
-              shortSidePx: shortSide
+              points: [
+                { x: roiX1 + leftX, y: roiY1 + topY },
+                { x: roiX1 + rightX, y: roiY1 + topY },
+                { x: roiX1 + rightX, y: roiY1 + bottomY },
+                { x: roiX1 + leftX, y: roiY1 + bottomY }
+              ],
+              longSidePx: span,
+              shortSidePx: hSpan
             };
           }
-          cnt.delete();
         }
-        contours.delete();
-        hierarchy.delete();
       }
-
-      const thresholdPairs = [[18, 60], [30, 95], [45, 130]];
-      for (const [lowT, highT] of thresholdPairs) {
-        const edges = new cv.Mat();
-        const closed = new cv.Mat();
-        cv.Canny(blurred, edges, lowT, highT);
-        cv.morphologyEx(edges, closed, cv.MORPH_CLOSE, closeKernel);
-        scanContours(closed);
-        edges.delete();
-        closed.delete();
-      }
-
-      if (!bestBox) {
-        const adapt = new cv.Mat();
-        const adaptClosed = new cv.Mat();
-        cv.adaptiveThreshold(blurred, adapt, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 4);
-        cv.morphologyEx(adapt, adaptClosed, cv.MORPH_CLOSE, closeKernel);
-        scanContours(adaptClosed);
-        adapt.delete();
-        adaptClosed.delete();
-      }
-
-      src.delete(); roi.delete(); gray.delete(); enhanced.delete(); blurred.delete();
-      closeKernel.delete();
 
       return bestBox;
     }
@@ -547,51 +586,57 @@
 
         if (posture.isValid && cvReady) {
           canCaptureNow = true;
-          statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "✅";
-          statusText.innerText = "Perfect position — Tap Capture";
-        } else if (posture.isTooClose) {
-          canCaptureNow = false;
-          statusPill.className = "bg-rose-500 text-white font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "🚫";
-          statusText.innerText = "Too close! Move back to 50–70 cm";
-        } else if (posture.isTooFar) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "↔️";
-          statusText.innerText = "Too far — move closer (50–70 cm)";
-        } else if (posture.isChinUp) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⬇️";
-          statusText.innerText = "Chin too high — lower chin level";
-        } else if (posture.isChinDown) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⬆️";
-          statusText.innerText = "Chin too low — lift chin level";
-        } else if (posture.isTurned) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "👀";
-          statusText.innerText = "Face turned — look straight ahead";
-        } else if (posture.isTilted) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⚖️";
-          statusText.innerText = "Head tilted — keep eyes level";
-        } else {
-          canCaptureNow = false;
-          statusPill.className = "bg-sky-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⏳";
-          statusText.innerText = "Loading card detector...";
-        }
+          if (!steadySince) steadySince = performance.now();
+          const elapsed = performance.now() - steadySince;
+          const remaining = Math.max(0, Math.ceil((AUTO_CAPTURE_MS - elapsed) / 1000));
 
-        if (canCaptureNow) {
+          statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+          statusIcon.innerText = "⏱️";
+          statusText.innerText = remaining > 0 ? `Hold steady... Auto-capturing in ${remaining}s` : "Capturing...";
+
           captureBtn.disabled = false;
-          captureBtn.innerHTML = "<span>📸 Capture & Analyze</span>";
+          captureBtn.innerHTML = `<span>📸 Capture Now (${remaining}s)</span>`;
           captureBtn.className = "w-full py-3.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2 cursor-pointer";
+
+          if (elapsed >= AUTO_CAPTURE_MS) {
+            canvasCtx.restore();
+            triggerCapture();
+            return;
+          }
         } else {
+          canCaptureNow = false;
+          steadySince = null;
+
+          if (posture.isTooClose) {
+            statusPill.className = "bg-rose-500 text-white font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+            statusIcon.innerText = "🚫";
+            statusText.innerText = "Too close! Move back to 50–70 cm";
+          } else if (posture.isTooFar) {
+            statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+            statusIcon.innerText = "↔️";
+            statusText.innerText = "Too far — move closer (50–70 cm)";
+          } else if (posture.isChinUp) {
+            statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+            statusIcon.innerText = "⬇️";
+            statusText.innerText = "Chin too high — lower chin level";
+          } else if (posture.isChinDown) {
+            statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+            statusIcon.innerText = "⬆️";
+            statusText.innerText = "Chin too low — lift chin level";
+          } else if (posture.isTurned) {
+            statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+            statusIcon.innerText = "👀";
+            statusText.innerText = "Face turned — look straight ahead";
+          } else if (posture.isTilted) {
+            statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+            statusIcon.innerText = "⚖️";
+            statusText.innerText = "Head tilted — keep eyes level";
+          } else {
+            statusPill.className = "bg-sky-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
+            statusIcon.innerText = "⏳";
+            statusText.innerText = "Loading card detector...";
+          }
+
           captureBtn.disabled = true;
           captureBtn.innerHTML = `<span>🔒 ${statusText.innerText}</span>`;
           captureBtn.className = "w-full py-3.5 bg-slate-800 text-slate-400 border border-slate-700 font-bold text-sm rounded-2xl transition-all duration-200 flex items-center justify-center space-x-2 cursor-not-allowed";
@@ -599,6 +644,7 @@
       } else {
         currentLandmarks = null;
         canCaptureNow = false;
+        steadySince = null;
         captureBtn.disabled = true;
         statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
         statusIcon.innerText = "⚠️";
