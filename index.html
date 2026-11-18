@@ -110,19 +110,22 @@
     const CARD_SHORT_EDGE_MM = 53.98;
     const CARD_ASPECT = CARD_LONG_EDGE_MM / CARD_SHORT_EDGE_MM; // 1.5858
 
+    const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
     let isCaptured = false;
     let currentLandmarks = null;
     let cvReady = false;
     let canCaptureNow = false;
 
     // Smoothed posture & hands-free countdown state
-    let smoothFaceRatio = null;
+    let smoothNormFaceRatio = null;
+    let smoothEstDistCm = null;
     let smoothPitch = 0;
     let smoothYaw = 0;
     let smoothRoll = 0;
     let smoothFacePixelW = null;
     let steadySince = null;
-    const AUTO_CAPTURE_MS = 4000; // 4-second countdown
+    const AUTO_CAPTURE_MS = 4000;
 
     function onOpenCvReady() {
       cvReady = true;
@@ -199,7 +202,10 @@
       const p263 = landmarks[263];
 
       const rawFacePixelWidth = Math.hypot((p356.x - p127.x) * w, (p356.y - p127.y) * h);
-      const rawFaceRatio = rawFacePixelWidth / w;
+
+      // Normalize by longest frame dimension so portrait phones (720x1280) and landscape laptops (1280x720) share the same scale
+      const longFrameDim = Math.max(w, h);
+      const rawNormFaceRatio = rawFacePixelWidth / longFrameDim;
 
       const faceHeightNorm = Math.hypot(p152.x - p10.x, p152.y - p10.y) || 0.1;
       const rawPitch = (p10.z - p152.z) / faceHeightNorm;
@@ -214,16 +220,19 @@
 
       const a = 0.25;
       smoothFacePixelW = smoothFacePixelW === null ? rawFacePixelWidth : smoothFacePixelW * (1 - a) + rawFacePixelWidth * a;
-      smoothFaceRatio = smoothFaceRatio === null ? rawFaceRatio : smoothFaceRatio * (1 - a) + rawFaceRatio * a;
+      smoothNormFaceRatio = smoothNormFaceRatio === null ? rawNormFaceRatio : smoothNormFaceRatio * (1 - a) + rawNormFaceRatio * a;
       smoothPitch = smoothPitch * (1 - a) + rawPitch * a;
       smoothYaw = smoothYaw * (1 - a) + rawYaw * a;
       smoothRoll = smoothRoll * (1 - a) + rawRoll * a;
 
-      const estDistanceCm = Math.round(9.2 / smoothFaceRatio);
+      // Mobile selfie lenses have narrower FOV than laptop webcams (11.8 vs 9.2 normalized focal constant)
+      const focalConstant = isMobileDevice ? 11.8 : 9.2;
+      const estDistanceCm = Math.round(focalConstant / smoothNormFaceRatio);
+      smoothEstDistCm = estDistanceCm;
 
-      // Strict 40–60 cm sweet spot (9.2 / 40 = 0.230, 9.2 / 60 = 0.153)
-      const isTooClose = smoothFaceRatio > 0.230;
-      const isTooFar = smoothFaceRatio < 0.153;
+      // Enforce 40–60 cm physical distance on both phone and laptop
+      const isTooClose = estDistanceCm < 40;
+      const isTooFar = estDistanceCm > 60;
       const isChinUp = smoothPitch > 0.16;
       const isChinDown = smoothPitch < -0.16;
       const isTurned = smoothYaw > 0.18;
@@ -461,7 +470,7 @@
       const rawMm = facePixelWidth / scaleFrontal;
 
       // Distance-compensated perspective factor keeps head width accurate across 40–60 cm
-      const estDist = Math.round(9.2 / (smoothFaceRatio || 0.184));
+      const estDist = smoothEstDistCm || 50;
       const parallaxFactor = Math.max(1.07, Math.min(1.145, 1.132 - (estDist - 46) * 0.0018));
       const trueWidthMm = rawMm * parallaxFactor;
 
