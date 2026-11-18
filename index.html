@@ -122,7 +122,7 @@
     let smoothRoll = 0;
     let smoothFacePixelW = null;
     let steadySince = null;
-    const AUTO_CAPTURE_MS = 2200; // Auto-captures after 2.2s of steady alignment
+    const AUTO_CAPTURE_MS = 4000; // 4-second countdown so users have plenty of time to position the card
 
     function onOpenCvReady() {
       cvReady = true;
@@ -168,7 +168,6 @@
       }
     }
 
-    // Use pointerdown + click so tapping while holding a card triggers instantaneously without losing focus
     captureBtn.addEventListener('click', () => {
       if (!isCaptured) {
         if (!currentLandmarks) return;
@@ -455,7 +454,9 @@
       canvasCtx.stroke();
       canvasCtx.restore();
 
-      const scaleFrontal = cardBox.longSidePx / CARD_LONG_EDGE_MM;
+      // Cross-check long edge against short edge * 1.5858 so finger pinches on the top border never shrink the card scale
+      const effectiveLongPx = Math.max(cardBox.longSidePx, cardBox.shortSidePx * CARD_ASPECT * 0.96);
+      const scaleFrontal = effectiveLongPx / CARD_LONG_EDGE_MM;
       const rawMm = facePixelWidth / scaleFrontal;
       const trueWidthMm = rawMm * 1.125;
 
