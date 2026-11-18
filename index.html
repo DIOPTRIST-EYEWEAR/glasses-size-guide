@@ -167,6 +167,7 @@
       return deg;
     }
 
+    // Calibrated 3D Pose (Pitch, Yaw, Roll) + True 50–70 cm Distance Check
     function checkPostureAndDistance(landmarks, w, h) {
       const p127 = landmarks[127];
       const p356 = landmarks[356];
@@ -178,25 +179,31 @@
 
       const facePixelWidth = Math.hypot((p356.x - p127.x) * w, (p356.y - p127.y) * h);
       const faceRatio = facePixelWidth / w;
-      const estDistanceCm = Math.round(11.6 / faceRatio);
 
+      // Calibrated focal constant (9.2 / faceRatio) so 38 cm reads ~38 cm and 50–70 cm matches true physical distance
+      const estDistanceCm = Math.round(9.2 / faceRatio);
+
+      // Pitch (chin up vs chin down)
       const faceHeightNorm = Math.hypot(p152.x - p10.x, p152.y - p10.y) || 0.1;
       const pitchRatio = (p10.z - p152.z) / faceHeightNorm;
       const isChinUp = pitchRatio > 0.11;
       const isChinDown = pitchRatio < -0.11;
 
+      // Yaw (head turned left or right)
       const eyeMidX = (p33.x + p263.x) / 2;
       const eyeSpanX = Math.abs(p263.x - p33.x) || 0.05;
       const yawRatio = Math.abs(p1.x - eyeMidX) / eyeSpanX;
       const isTurned = yawRatio > 0.14;
 
+      // Roll (head tilted sideways)
       const eyeDx = (p263.x - p33.x) * w;
       const eyeDy = (p263.y - p33.y) * h;
       const rollDeg = Math.abs(Math.atan2(eyeDy, eyeDx) * 180 / Math.PI);
       const isTilted = rollDeg > 6.5;
 
-      const isTooClose = faceRatio > 0.255;
-      const isTooFar = faceRatio < 0.160;
+      // True 48–72 cm sweet spot (faceRatio between 0.128 and 0.192)
+      const isTooClose = faceRatio > 0.192;
+      const isTooFar = faceRatio < 0.128;
 
       return {
         facePixelWidth,
@@ -225,7 +232,7 @@
       const faceH = Math.hypot((pChin.x - pNose.x) * w, (pChin.y - pNose.y) * h) * 1.55;
       const centerX = ((p127.x + p356.x) / 2) * w;
 
-      // Expanded upward ROI (0.75 * faceH above brow) so the entire card (including top edge & vertical cards) stays cleanly inside
+      // Expanded upward ROI (0.75 * faceH above brow) so the entire card stays cleanly inside
       const roiX1 = Math.max(0, Math.round(centerX - faceW * 0.70));
       const roiX2 = Math.min(w, Math.round(centerX + faceW * 0.70));
       const roiY2 = Math.max(20, Math.round(browY - faceH * 0.01));
@@ -253,7 +260,6 @@
 
       const closeKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
 
-      // Helper to score candidate rotated rectangles from any binary edge/region map
       function scanContours(binaryMat) {
         const contours = new cv.MatVector();
         const hierarchy = new cv.Mat();
@@ -290,7 +296,6 @@
             continue;
           }
 
-          // Check perimeter coverage along the 4 edges of the rotated box (works even if interior is hollow Canny edges!)
           const arcLen = cv.arcLength(cnt, true);
           const boxPerim = 2 * (rw + rh);
           const edgeSupport = Math.min(1.5, arcLen / (boxPerim || 1));
@@ -300,7 +305,6 @@
           }
 
           const aspectAccuracy = 1 - Math.min(1, Math.abs(aspect - CARD_ASPECT) / 0.45);
-          // Favor boxes whose center sits near the forehead center and whose aspect ratio matches 1.586
           const rectCenterX = rotRect.center.x;
           const centerOffsetPenalty = Math.abs(rectCenterX - roiW / 2) * 0.25;
           const score = (aspectAccuracy * 220) + (edgeSupport * 90) + (longSide * 0.4) - centerOffsetPenalty;
@@ -332,7 +336,7 @@
         closed.delete();
       }
 
-      // Pass 4: Adaptive Threshold structural luminance region (catches low-contrast cards where Canny lines break)
+      // Pass 4: Adaptive Threshold structural luminance region fallback
       if (!bestBox) {
         const adapt = new cv.Mat();
         const adaptClosed = new cv.Mat();
