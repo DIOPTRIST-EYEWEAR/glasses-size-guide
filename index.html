@@ -1,173 +1,11 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Eyewear Size & Face Shape Guide</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
-  <script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onOpenCvReady()"></script>
-</head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-center items-center p-4 font-sans">
+// Smoothed posture state (prevents 30fps landmark flicker from blocking clicks)
+    let smoothFaceRatio = null;
+    let smoothPitch = 0;
+    let smoothYaw = 0;
+    let smoothRoll = 0;
+    let smoothFacePixelW = null;
+    let lastValidTimestamp = 0;
 
-  <div class="max-w-xl w-full bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-800 space-y-4">
-    
-    <!-- Header -->
-    <div class="text-center space-y-1">
-      <h1 class="text-2xl font-bold text-white">Find Your Glasses Size</h1>
-      <p class="text-slate-400 text-sm">Hold any standard card flat against your forehead (50–70 cm away)</p>
-    </div>
-
-    <!-- Live Guardrail Pills (Distance + Head Angle) -->
-    <div class="flex flex-wrap justify-center gap-2">
-      <div id="statusPill" class="bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2 transition-all duration-300">
-        <span id="statusIcon">⏳</span>
-        <span id="statusText">Loading vision engine...</span>
-      </div>
-      <div id="distanceBadge" class="bg-slate-800 text-slate-300 font-semibold px-3 py-1.5 rounded-full text-xs border border-slate-700">
-        Distance: --
-      </div>
-    </div>
-
-    <!-- Camera Feed -->
-    <div class="relative w-full aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border border-slate-800 flex items-center justify-center">
-      <video id="webcam" class="hidden" playsinline></video>
-      <canvas id="output_canvas" class="w-full h-full object-cover -scale-x-100"></canvas>
-      
-      <div id="loading" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-sky-400 font-medium text-base p-6 text-center">
-        <span>Initializing camera & computer vision...</span>
-      </div>
-    </div>
-
-    <!-- Capture Action Button -->
-    <div class="flex justify-center">
-      <button id="captureBtn" disabled class="w-full py-3.5 bg-slate-700 text-slate-400 cursor-not-allowed font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2">
-        <span>📸 Align Distance & Head Angle First</span>
-      </button>
-    </div>
-
-    <!-- Result Card & Recommendations -->
-    <div id="resultsContainer" class="space-y-4 hidden">
-      
-      <!-- Size & Measurements -->
-      <div class="bg-slate-950 p-5 rounded-2xl border border-slate-800 text-center space-y-1">
-        <span class="text-xs uppercase tracking-widest text-slate-400 font-semibold">Your Size Recommendation</span>
-        <div id="sizeOutput" class="text-3xl font-extrabold text-sky-400">--</div>
-        <p id="mmSubtext" class="text-xs text-slate-400">Measured Head Width: --</p>
-      </div>
-
-      <!-- Face Shape Classification -->
-      <div class="bg-slate-950 p-5 rounded-2xl border border-slate-800 text-center space-y-1">
-        <span class="text-xs uppercase tracking-widest text-slate-400 font-semibold">Detected Face Shape</span>
-        <div id="shapeOutput" class="text-3xl font-extrabold text-amber-400">--</div>
-        <p id="shapeDesc" class="text-xs text-slate-400">--</p>
-      </div>
-
-      <!-- Style Recommendation -->
-      <div class="bg-slate-950 p-5 rounded-2xl border border-slate-800 space-y-3">
-        <div class="flex items-center space-x-2 border-b border-slate-800 pb-2">
-          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-          <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Website Style Guide Match</span>
-        </div>
-        
-        <div class="space-y-1">
-          <span class="text-xs text-slate-400 uppercase tracking-wide">Best Frame Choice:</span>
-          <h3 id="bestChoiceTitle" class="text-lg font-bold text-slate-100">--</h3>
-        </div>
-
-        <div class="space-y-1 pt-1">
-          <span class="text-xs text-slate-400 uppercase tracking-wide">Why It Works:</span>
-          <p id="whyItWorksText" class="text-xs text-slate-300 leading-relaxed">--</p>
-        </div>
-      </div>
-
-    </div>
-
-  </div>
-
-  <script>
-    const videoElement = document.getElementById('webcam');
-    const canvasElement = document.getElementById('output_canvas');
-    const canvasCtx = canvasElement.getContext('2d');
-    const loadingDiv = document.getElementById('loading');
-    
-    const statusPill = document.getElementById('statusPill');
-    const statusIcon = document.getElementById('statusIcon');
-    const statusText = document.getElementById('statusText');
-    const distanceBadge = document.getElementById('distanceBadge');
-    const captureBtn = document.getElementById('captureBtn');
-
-    const resultsContainer = document.getElementById('resultsContainer');
-    const sizeOutput = document.getElementById('sizeOutput');
-    const mmSubtext = document.getElementById('mmSubtext');
-    const shapeOutput = document.getElementById('shapeOutput');
-    const shapeDesc = document.getElementById('shapeDesc');
-    const bestChoiceTitle = document.getElementById('bestChoiceTitle');
-    const whyItWorksText = document.getElementById('whyItWorksText');
-
-    const CARD_LONG_EDGE_MM = 85.60;
-    const CARD_SHORT_EDGE_MM = 53.98;
-    const CARD_ASPECT = CARD_LONG_EDGE_MM / CARD_SHORT_EDGE_MM; // 1.5858
-
-    let isCaptured = false;
-    let currentLandmarks = null;
-    let cvReady = false;
-    let canCaptureNow = false;
-
-    function onOpenCvReady() {
-      cvReady = true;
-    }
-
-    const FACE_RULES = {
-      "Round": {
-        best: "Rectangular & Angular frames.",
-        why: "Sharp horizontal lines add structure, elongating your face and thinning your cheeks."
-      },
-      "Oval": {
-        best: "Any frame shape.",
-        why: "Oval faces feature naturally balanced symmetry. Just ensure frames are slightly wider than the broadest part of your face."
-      },
-      "Oblong": {
-        best: "Tall, Oversized, or Decorative frames.",
-        why: "Tall lenses and decorative temples break up vertical face length, balancing longer features."
-      },
-      "Heart-Shaped": {
-        best: "Cat-Eye & Bottom-Heavy frames.",
-        why: "Wider top dimensions or low-slung frames balance out a tapering chin line."
-      },
-      "Square & Angular": {
-        best: "Round, Oval, & Aviator frames.",
-        why: "Curved, softer lens profiles soften prominent jawlines and broad foreheads."
-      }
-    };
-
-    captureBtn.addEventListener('click', () => {
-      if (!isCaptured) {
-        if (!currentLandmarks || !canCaptureNow) return;
-        const success = runRotatedCardAnalysis();
-        if (success) {
-          isCaptured = true;
-          captureBtn.innerHTML = "<span>🔄 Retake Photo</span>";
-          captureBtn.className = "w-full py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2 border border-slate-700";
-        }
-      } else {
-        isCaptured = false;
-        resultsContainer.classList.add('hidden');
-      }
-    });
-
-    function getAngleDeg(A, B, C, w, h) {
-      const Ax = A.x * w, Ay = A.y * h;
-      const Bx = B.x * w, By = B.y * h;
-      const Cx = C.x * w, Cy = C.y * h;
-      const rad = Math.atan2(Cy - By, Cx - Bx) - Math.atan2(Ay - By, Ax - Bx);
-      let deg = Math.abs(rad * 180 / Math.PI);
-      if (deg > 180) deg = 360 - deg;
-      return deg;
-    }
-
-    // Calibrated 3D Pose (Pitch, Yaw, Roll) + True 50–70 cm Distance Check
     function checkPostureAndDistance(landmarks, w, h) {
       const p127 = landmarks[127];
       const p356 = landmarks[356];
@@ -177,36 +15,48 @@
       const p33 = landmarks[33];
       const p263 = landmarks[263];
 
-      const facePixelWidth = Math.hypot((p356.x - p127.x) * w, (p356.y - p127.y) * h);
-      const faceRatio = facePixelWidth / w;
+      const rawFacePixelWidth = Math.hypot((p356.x - p127.x) * w, (p356.y - p127.y) * h);
+      const rawFaceRatio = rawFacePixelWidth / w;
 
-      // Calibrated focal constant (9.2 / faceRatio) so 38 cm reads ~38 cm and 50–70 cm matches true physical distance
-      const estDistanceCm = Math.round(9.2 / faceRatio);
-
-      // Pitch (chin up vs chin down)
       const faceHeightNorm = Math.hypot(p152.x - p10.x, p152.y - p10.y) || 0.1;
-      const pitchRatio = (p10.z - p152.z) / faceHeightNorm;
-      const isChinUp = pitchRatio > 0.11;
-      const isChinDown = pitchRatio < -0.11;
+      const rawPitch = (p10.z - p152.z) / faceHeightNorm;
 
-      // Yaw (head turned left or right)
       const eyeMidX = (p33.x + p263.x) / 2;
       const eyeSpanX = Math.abs(p263.x - p33.x) || 0.05;
-      const yawRatio = Math.abs(p1.x - eyeMidX) / eyeSpanX;
-      const isTurned = yawRatio > 0.14;
+      const rawYaw = Math.abs(p1.x - eyeMidX) / eyeSpanX;
 
-      // Roll (head tilted sideways)
       const eyeDx = (p263.x - p33.x) * w;
       const eyeDy = (p263.y - p33.y) * h;
-      const rollDeg = Math.abs(Math.atan2(eyeDy, eyeDx) * 180 / Math.PI);
-      const isTilted = rollDeg > 6.5;
+      const rawRoll = Math.abs(Math.atan2(eyeDy, eyeDx) * 180 / Math.PI);
 
-      // True 48–72 cm sweet spot (faceRatio between 0.128 and 0.192)
-      const isTooClose = faceRatio > 0.192;
-      const isTooFar = faceRatio < 0.128;
+      // Exponential moving average (alpha = 0.25) eliminates frame-to-frame jitter
+      const a = 0.25;
+      smoothFacePixelW = smoothFacePixelW === null ? rawFacePixelWidth : smoothFacePixelW * (1 - a) + rawFacePixelWidth * a;
+      smoothFaceRatio = smoothFaceRatio === null ? rawFaceRatio : smoothFaceRatio * (1 - a) + rawFaceRatio * a;
+      smoothPitch = smoothPitch * (1 - a) + rawPitch * a;
+      smoothYaw = smoothYaw * (1 - a) + rawYaw * a;
+      smoothRoll = smoothRoll * (1 - a) + rawRoll * a;
+
+      const estDistanceCm = Math.round(9.2 / smoothFaceRatio);
+
+      // Natural, stable tolerances (~45–75 cm, ±16% pitch, ±18% yaw, ±9° roll)
+      const isTooClose = smoothFaceRatio > 0.205;
+      const isTooFar = smoothFaceRatio < 0.122;
+      const isChinUp = smoothPitch > 0.16;
+      const isChinDown = smoothPitch < -0.16;
+      const isTurned = smoothYaw > 0.18;
+      const isTilted = smoothRoll > 9.0;
+
+      const instantValid = !isTooClose && !isTooFar && !isChinDown && !isChinUp && !isTurned && !isTilted;
+      if (instantValid) {
+        lastValidTimestamp = performance.now();
+      }
+
+      // 450ms grace window so reaching for the mouse/tap never locks the button mid-click
+      const isValid = instantValid || (performance.now() - lastValidTimestamp < 450);
 
       return {
-        facePixelWidth,
+        facePixelWidth: smoothFacePixelW,
         estDistanceCm,
         isTooClose,
         isTooFar,
@@ -214,408 +64,6 @@
         isChinUp,
         isTurned,
         isTilted,
-        isValid: !isTooClose && !isTooFar && !isChinDown && !isChinUp && !isTurned && !isTilted
+        isValid
       };
     }
-
-    // Color-agnostic structural detector: finds the card's rotated 4-corner geometry via multi-pass Canny + adaptive threshold + minAreaRect
-    function detectRotatedCard(fullCanvas, w, h, landmarks) {
-      const p127 = landmarks[127];
-      const p356 = landmarks[356];
-      const pBrowL = landmarks[105];
-      const pBrowR = landmarks[334];
-      const pChin = landmarks[152];
-      const pNose = landmarks[6];
-
-      const faceW = Math.hypot((p356.x - p127.x) * w, (p356.y - p127.y) * h);
-      const browY = Math.min(pBrowL.y, pBrowR.y) * h;
-      const faceH = Math.hypot((pChin.x - pNose.x) * w, (pChin.y - pNose.y) * h) * 1.55;
-      const centerX = ((p127.x + p356.x) / 2) * w;
-
-      // Expanded upward ROI (0.75 * faceH above brow) so the entire card stays cleanly inside
-      const roiX1 = Math.max(0, Math.round(centerX - faceW * 0.70));
-      const roiX2 = Math.min(w, Math.round(centerX + faceW * 0.70));
-      const roiY2 = Math.max(20, Math.round(browY - faceH * 0.01));
-      const roiY1 = Math.max(0, Math.round(browY - faceH * 0.75));
-
-      const roiW = roiX2 - roiX1;
-      const roiH = roiY2 - roiY1;
-      if (roiW <= 40 || roiH <= 30 || !cvReady || typeof cv === 'undefined') return null;
-
-      const src = cv.imread(fullCanvas);
-      const roi = src.roi(new cv.Rect(roiX1, roiY1, roiW, roiH));
-      const gray = new cv.Mat();
-      const enhanced = new cv.Mat();
-      const blurred = new cv.Mat();
-
-      cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
-      const clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
-      clahe.apply(gray, enhanced);
-      clahe.delete();
-
-      cv.GaussianBlur(enhanced, blurred, new cv.Size(5, 5), 0);
-
-      let bestBox = null;
-      let bestScore = -1;
-
-      const closeKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
-
-      function scanContours(binaryMat) {
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-        cv.findContours(binaryMat, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-
-        for (let i = 0; i < contours.size(); i++) {
-          const cnt = contours.get(i);
-          const rotRect = cv.minAreaRect(cnt);
-          const rw = rotRect.size.width;
-          const rh = rotRect.size.height;
-          const longSide = Math.max(rw, rh);
-          const shortSide = Math.min(rw, rh);
-
-          if (shortSide <= 12) {
-            cnt.delete();
-            continue;
-          }
-
-          // Physical card long edge (85.6mm) must be 45% to 78% of human head width
-          if (longSide < faceW * 0.45 || longSide > faceW * 0.78) {
-            cnt.delete();
-            continue;
-          }
-
-          // Physical card short edge (53.98mm) must be 25% to 52% of human head width
-          if (shortSide < faceW * 0.25 || shortSide > faceW * 0.52) {
-            cnt.delete();
-            continue;
-          }
-
-          const aspect = longSide / shortSide;
-          if (aspect < 1.25 || aspect > 1.95) {
-            cnt.delete();
-            continue;
-          }
-
-          const arcLen = cv.arcLength(cnt, true);
-          const boxPerim = 2 * (rw + rh);
-          const edgeSupport = Math.min(1.5, arcLen / (boxPerim || 1));
-          if (edgeSupport < 0.45) {
-            cnt.delete();
-            continue;
-          }
-
-          const aspectAccuracy = 1 - Math.min(1, Math.abs(aspect - CARD_ASPECT) / 0.45);
-          const rectCenterX = rotRect.center.x;
-          const centerOffsetPenalty = Math.abs(rectCenterX - roiW / 2) * 0.25;
-          const score = (aspectAccuracy * 220) + (edgeSupport * 90) + (longSide * 0.4) - centerOffsetPenalty;
-
-          if (score > bestScore) {
-            bestScore = score;
-            const vertices = cv.RotatedRect.points(rotRect);
-            bestBox = {
-              points: vertices.map(pt => ({ x: pt.x + roiX1, y: pt.y + roiY1 })),
-              longSidePx: longSide,
-              shortSidePx: shortSide
-            };
-          }
-          cnt.delete();
-        }
-        contours.delete();
-        hierarchy.delete();
-      }
-
-      // Pass 1–3: Multi-threshold Canny structural edge detection
-      const thresholdPairs = [[18, 60], [30, 95], [45, 130]];
-      for (const [lowT, highT] of thresholdPairs) {
-        const edges = new cv.Mat();
-        const closed = new cv.Mat();
-        cv.Canny(blurred, edges, lowT, highT);
-        cv.morphologyEx(edges, closed, cv.MORPH_CLOSE, closeKernel);
-        scanContours(closed);
-        edges.delete();
-        closed.delete();
-      }
-
-      // Pass 4: Adaptive Threshold structural luminance region fallback
-      if (!bestBox) {
-        const adapt = new cv.Mat();
-        const adaptClosed = new cv.Mat();
-        cv.adaptiveThreshold(blurred, adapt, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 4);
-        cv.morphologyEx(adapt, adaptClosed, cv.MORPH_CLOSE, closeKernel);
-        scanContours(adaptClosed);
-        adapt.delete();
-        adaptClosed.delete();
-      }
-
-      src.delete(); roi.delete(); gray.delete(); enhanced.delete(); blurred.delete();
-      closeKernel.delete();
-
-      return bestBox;
-    }
-
-    function runRotatedCardAnalysis() {
-      const w = canvasElement.width;
-      const h = canvasElement.height;
-      const landmarks = currentLandmarks;
-
-      const fullCanvas = document.createElement('canvas');
-      fullCanvas.width = w;
-      fullCanvas.height = h;
-      const fullCtx = fullCanvas.getContext('2d');
-      fullCtx.drawImage(videoElement, 0, 0, w, h);
-
-      const p127 = landmarks[127];
-      const p356 = landmarks[356];
-      const pt127 = { x: p127.x * w, y: p127.y * h };
-      const pt356 = { x: p356.x * w, y: p356.y * h };
-      const facePixelWidth = Math.hypot(pt356.x - pt127.x, pt356.y - pt127.y);
-
-      const cardBox = detectRotatedCard(fullCanvas, w, h, landmarks);
-
-      if (!cardBox) {
-        alert("Could not clearly detect the card edges. Hold the card flat against your forehead above your eyebrows without covering its sides, then try again.");
-        return false;
-      }
-
-      // Draw captured frame + exact rotated 4-point green polygon + temple line
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, w, h);
-      canvasCtx.drawImage(fullCanvas, 0, 0, w, h);
-
-      canvasCtx.strokeStyle = '#22c55e';
-      canvasCtx.fillStyle = 'rgba(34, 197, 94, 0.22)';
-      canvasCtx.lineWidth = 4;
-      canvasCtx.beginPath();
-      canvasCtx.moveTo(cardBox.points[0].x, cardBox.points[0].y);
-      for (let i = 1; i < 4; i++) {
-        canvasCtx.lineTo(cardBox.points[i].x, cardBox.points[i].y);
-      }
-      canvasCtx.closePath();
-      canvasCtx.fill();
-      canvasCtx.stroke();
-
-      canvasCtx.strokeStyle = '#eab308';
-      canvasCtx.lineWidth = 3;
-      canvasCtx.beginPath();
-      canvasCtx.moveTo(pt127.x, pt127.y);
-      canvasCtx.lineTo(pt356.x, pt356.y);
-      canvasCtx.stroke();
-      canvasCtx.restore();
-
-      // Use true rotated long edge (85.60mm) + validated 1.125 parallax factor
-      const scaleFrontal = cardBox.longSidePx / CARD_LONG_EDGE_MM;
-      const rawMm = facePixelWidth / scaleFrontal;
-      const trueWidthMm = rawMm * 1.125;
-
-      if (trueWidthMm < 133.0) {
-        sizeOutput.innerText = "SMALL";
-        sizeOutput.className = "text-3xl font-extrabold text-blue-400";
-      } else if (trueWidthMm < 140.0) {
-        sizeOutput.innerText = "MEDIUM";
-        sizeOutput.className = "text-3xl font-extrabold text-emerald-400";
-      } else {
-        sizeOutput.innerText = "LARGE";
-        sizeOutput.className = "text-3xl font-extrabold text-purple-400";
-      }
-      mmSubtext.innerText = `Measured Head Width: ${trueWidthMm.toFixed(1)} mm`;
-
-      // Multi-factor face shape classification
-      const p10 = landmarks[10], p152 = landmarks[152];
-      const p234 = landmarks[234], p454 = landmarks[454];
-      const p58 = landmarks[58], p288 = landmarks[288];
-      const p172 = landmarks[172], p397 = landmarks[397];
-      const p6 = landmarks[6];
-
-      const cheekWidth = Math.hypot((p454.x - p234.x) * w, (p454.y - p234.y) * h);
-      const jawCornerWidth = Math.hypot((p288.x - p58.x) * w, (p288.y - p58.y) * h);
-      const jawLowerWidth = Math.hypot((p397.x - p172.x) * w, (p397.y - p172.y) * h);
-      
-      const midFaceHeight = Math.hypot((p152.x - p6.x) * w, (p152.y - p6.y) * h) * 1.50;
-      const rawFaceHeight = Math.hypot((p152.x - p10.x) * w, (p152.y - p10.y) * h);
-      const faceHeight = Math.max(rawFaceHeight, midFaceHeight);
-
-      const upperWidth = Math.max(cheekWidth, facePixelWidth);
-      const aspectRatio = faceHeight / upperWidth;
-      const jawToCheekRatio = jawCornerWidth / upperWidth;
-      const upperToJawRatio = upperWidth / jawLowerWidth;
-
-      const angleLeft = getAngleDeg(p127, p58, p152, w, h);
-      const angleRight = getAngleDeg(p356, p288, p152, w, h);
-      const jawAngleDeg = (angleLeft + angleRight) / 2;
-
-      const scores = { "Round": 0, "Oval": 0, "Oblong": 0, "Heart-Shaped": 0, "Square & Angular": 0 };
-
-      if (upperToJawRatio >= 1.25) {
-        scores["Heart-Shaped"] += 4;
-        if (upperToJawRatio >= 1.30) scores["Heart-Shaped"] += 2;
-      }
-      if (aspectRatio >= 1.38) {
-        scores["Oblong"] += 4;
-        scores["Oval"] += 1;
-      } else if (aspectRatio >= 1.25 && aspectRatio < 1.38) {
-        scores["Oval"] += 3;
-        scores["Heart-Shaped"] += 1;
-      } else { 
-        scores["Round"] += 3;
-        scores["Square & Angular"] += 2;
-      }
-      if (jawToCheekRatio >= 0.86 && jawAngleDeg < 125) {
-        scores["Square & Angular"] += 4;
-      } else if (jawAngleDeg >= 125 || jawToCheekRatio <= 0.82) {
-        scores["Round"] += 3;
-        scores["Oval"] += 2;
-        scores["Heart-Shaped"] += 1;
-      }
-      if (aspectRatio < 1.26 && jawAngleDeg >= 122) {
-        scores["Round"] += 3;
-      }
-
-      let winningShape = "Oval";
-      let maxScore = -1;
-      for (const [shape, score] of Object.entries(scores)) {
-        if (score > maxScore) {
-          maxScore = score;
-          winningShape = shape;
-        }
-      }
-
-      shapeOutput.innerText = winningShape;
-      shapeDesc.innerText = `Facial features match a ${winningShape.toLowerCase()} profile.`;
-
-      const rec = FACE_RULES[winningShape];
-      bestChoiceTitle.innerText = rec.best;
-      whyItWorksText.innerText = rec.why;
-
-      resultsContainer.classList.remove('hidden');
-      statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-      statusIcon.innerText = "✅";
-      statusText.innerText = "Calibration Complete";
-      return true;
-    }
-
-    function onResults(results) {
-      if (loadingDiv && !loadingDiv.classList.contains('hidden')) {
-        loadingDiv.classList.add('hidden');
-      }
-
-      if (isCaptured) return;
-
-      canvasElement.width = videoElement.videoWidth || 1280;
-      canvasElement.height = videoElement.videoHeight || 720;
-
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-      const w = canvasElement.width;
-      const h = canvasElement.height;
-
-      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-        currentLandmarks = results.multiFaceLandmarks[0];
-        const posture = checkPostureAndDistance(currentLandmarks, w, h);
-
-        distanceBadge.innerText = `Est. Distance: ~${posture.estDistanceCm} cm`;
-
-        const p127 = currentLandmarks[127];
-        const p356 = currentLandmarks[356];
-        const pBrowL = currentLandmarks[105];
-        const pBrowR = currentLandmarks[334];
-        const browY = Math.min(pBrowL.y, pBrowR.y) * h;
-
-        const guideW = posture.facePixelWidth * 0.58;
-        const guideH = guideW / CARD_ASPECT;
-        const boxX = ((p127.x + p356.x) / 2) * w - (guideW / 2);
-        const boxY = browY - guideH - (posture.facePixelWidth * 0.04);
-
-        canvasCtx.strokeStyle = posture.isValid ? 'rgba(34, 197, 94, 0.8)' : 'rgba(245, 158, 11, 0.75)';
-        canvasCtx.lineWidth = 3;
-        canvasCtx.setLineDash([8, 6]);
-        canvasCtx.strokeRect(boxX, boxY, guideW, guideH);
-        canvasCtx.setLineDash([]);
-
-        if (posture.isTooClose) {
-          canCaptureNow = false;
-          statusPill.className = "bg-rose-500 text-white font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "🚫";
-          statusText.innerText = "Too close! Move back to 50–70 cm";
-        } else if (posture.isTooFar) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "↔️";
-          statusText.innerText = "Too far — move closer (50–70 cm)";
-        } else if (posture.isChinUp) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⬇️";
-          statusText.innerText = "Chin too high — lower chin level";
-        } else if (posture.isChinDown) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⬆️";
-          statusText.innerText = "Chin too low — lift chin level";
-        } else if (posture.isTurned) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "👀";
-          statusText.innerText = "Face turned — look straight ahead";
-        } else if (posture.isTilted) {
-          canCaptureNow = false;
-          statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⚖️";
-          statusText.innerText = "Head tilted — keep eyes level";
-        } else if (!cvReady) {
-          canCaptureNow = false;
-          statusPill.className = "bg-sky-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "⏳";
-          statusText.innerText = "Loading card detector...";
-        } else {
-          canCaptureNow = true;
-          statusPill.className = "bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-          statusIcon.innerText = "✅";
-          statusText.innerText = "Perfect position — Tap Capture";
-        }
-
-        if (canCaptureNow) {
-          captureBtn.disabled = false;
-          captureBtn.innerHTML = "<span>📸 Capture & Analyze</span>";
-          captureBtn.className = "w-full py-3.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-base rounded-2xl shadow-lg transition-all duration-200 flex items-center justify-center space-x-2 cursor-pointer";
-        } else {
-          captureBtn.disabled = true;
-          captureBtn.innerHTML = `<span>🔒 ${statusText.innerText}</span>`;
-          captureBtn.className = "w-full py-3.5 bg-slate-800 text-slate-400 border border-slate-700 font-bold text-sm rounded-2xl transition-all duration-200 flex items-center justify-center space-x-2 cursor-not-allowed";
-        }
-      } else {
-        currentLandmarks = null;
-        canCaptureNow = false;
-        captureBtn.disabled = true;
-        statusPill.className = "bg-amber-500 text-slate-950 font-bold px-4 py-1.5 rounded-full text-xs md:text-sm shadow-md flex items-center space-x-2";
-        statusIcon.innerText = "⚠️";
-        statusText.innerText = "Center your face in camera";
-      }
-
-      canvasCtx.restore();
-    }
-
-    const faceMesh = new FaceMesh({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-    });
-
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: false,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-
-    faceMesh.onResults(onResults);
-
-    const camera = new Camera(videoElement, {
-      onFrame: async () => { await faceMesh.send({ image: videoElement }); },
-      width: 1280,
-      height: 720
-    });
-
-    camera.start();
-  </script>
-</body>
-</html>
